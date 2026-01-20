@@ -41,8 +41,13 @@ class GetDatabaseFiles:
         if not os.path.exists(file_path):
             raise FileNotFoundError("Invalid path!")
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            code = f.read()
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                code = f.read()
+        except UnicodeDecodeError:
+            # Fallback to latin-1 (common in older Java files) if utf-8 fails
+            with open(file_path, "r", encoding="latin-1") as f:
+                code = f.read()
 
         code = self.remove_comments(code)
 
@@ -110,6 +115,7 @@ class GetDatabaseFiles:
                 
                 results.append(".".join(parts))
 
+        
         return results
 
 
