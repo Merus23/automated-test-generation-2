@@ -1,0 +1,18 @@
+services:
+  experiment_service:
+    build: .
+    container_name: experiment_service
+    ports:
+      - "8000:8000"
+      - "5000:5000"
+    env_file: ./.env
+    stdin_open: true
+    tty: true
+    networks:
+      - public_network
+    volumes:
+      - ./experiments:/app/experiments
+
+networks:
+  public_network:
+    driver: bridge
