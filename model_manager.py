@@ -1,7 +1,7 @@
 from huggingface_hub import HfApi, snapshot_download
 import os 
-
 from pathlib import Path
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -48,11 +48,54 @@ class ModelManager:
             print(f"Model {model_name} does not exist at {MODEL_PATH}")
             return
         
-        
+        os.rmdir(MODEL_PATH)
+        print(f"Model {model_name} deleted from {MODEL_PATH}")
 
+    def run_model(self, model_name, prompt) -> str:
+        
+        MODEL_PATH = os.path.join(self.BASE_DIR, "models", model_name)
+        
+        if not os.path.exists(MODEL_PATH):
+            raise ValueError(f"Model {model_name} does not exist at {MODEL_PATH}")
+        
+        print(f"Loading model from {MODEL_PATH}...")
+        
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+        model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
+
+    
+        generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
+
+        # print(f"Running model {model_name} with prompt: {prompt}")
+        print("Running model...")
+        
+        # Executa a geração
+        # max_new_tokens: limita o tamanho do código gerado
+        # temperature: 0.2 para ser mais preciso/determinístico (bom para código)
+        output = generator(
+            prompt, 
+            max_new_tokens=512, 
+            do_sample=True, 
+            temperature=0.2,
+            truncation=True
+        )
+        
+        generated_text = output[0]['generated_text']
+        return generated_text
+
+
+    def prone_code_generated(code) -> str:
+        """Most identify the python code and remove any extra text."""
+        
+        # TODO implement this function
+        return code
 
 
 if __name__ == "__main__":
     manager = ModelManager()
-    models = manager.list_hf_models()
-    print(models)
+    #models = manager.list_hf_models()
+    #manager.download_model("Qwen/Qwen2.5-Coder-0.5B-Instruct")
+    
+    prompt = "Write a fibonacci function in Python. Returne only the code, without explanations."
+    response = manager.run_model("Qwen_Qwen2.5-Coder-0.5B-Instruct", prompt)
+    print(response)
