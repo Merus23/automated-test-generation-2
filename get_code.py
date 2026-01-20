@@ -3,8 +3,8 @@ import re
 
 class GetCode:
 
-    def __init__(self):
-        pass
+    def __init__(self, database_root=None):
+        self.database_root = database_root
 
     def remove_comments(self, code):
         pattern = r'//[^\n]*|/\*.*?\*/|\'(?:\\.|[^\\\'])*\'|"(?:\\.|[^\\"])*"'
@@ -18,10 +18,11 @@ class GetCode:
                 
         return re.sub(pattern, replacer, code, flags=re.DOTALL)
 
-    def get_class_code(self, method_path: str) -> str:
+    def get_code(self, method_path: str) -> str:
         """
-        Recebe uma string como 'ProjectName.relativePath.package.ClassName.methodName' e retorna
-        o código-fonte do método.
+        Receves a string like 'ProjectName.relativePath.package.ClassName.methodName' and returns
+        the source code of the method.
+        
         """
         try:
             parts = method_path.split('.')
@@ -32,23 +33,24 @@ class GetCode:
             method_name = parts[-1]
             class_name = parts[-2]
             
-            # O caminho pode conter relativePath e package misturados/duplicados.
-            # Ex: 1_tullibee.src.main.java.com.ib.client.com.ib.client.Execution.equals
-            # parts[1:-2] = ['src', 'main', 'java', 'com', 'ib', 'client', 'com', 'ib', 'client']
-            # O arquivo real está em SF110/1_tullibee/src/main/java/com/ib/client/Execution.java
-            
             middle_parts = parts[1:-2]
             
-            # Ajuste para encontrar a raiz do projeto independentemente de onde o script é executado
-            # O script está em features/get_code.py, então subimos um nível para achar SF110
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            workspace_root = os.path.dirname(current_dir)
-            base_path = os.path.join(workspace_root, "SF110", project_name)
+            
+            if self.database_root:
+                db_root_name = os.path.basename(os.path.normpath(self.database_root))
+                if project_name == db_root_name:
+                  
+                    base_path = self.database_root
+                else:
+                    base_path = os.path.join(self.database_root, project_name)
+            else:
+                
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                workspace_root = os.path.dirname(current_dir)
+                base_path = os.path.join(workspace_root, "SF110", project_name)
             
             target_file = None
             
-            # Tenta encontrar o arquivo combinando partes do meio como diretórios
-            # Começa do maior caminho possível para o menor, priorizando o início da string que é o relativePath
             for i in range(len(middle_parts), -1, -1):
                  rel_path_segments = middle_parts[:i]
                  potential_path = os.path.join(base_path, *rel_path_segments, f"{class_name}.java")
@@ -57,7 +59,6 @@ class GetCode:
                      break
             
             if not target_file:
-                # Fallback: tenta procurar em todo o diretório do projeto se a dedução falhar
                 if os.path.exists(base_path):
                     for root, dirs, files in os.walk(base_path):
                         if f"{class_name}.java" in files:
@@ -70,7 +71,6 @@ class GetCode:
             with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
                 code = f.read()
 
-            # Remove comentários para facilitar o parsing
             clean_code = self.remove_comments(code)
             
             return self.extract_method(clean_code, method_name, class_name)
@@ -79,7 +79,6 @@ class GetCode:
             return f"Erro ao obter código: {str(e)}"
 
     def extract_method(self, code, method_name, class_name):
-        # Regex para encontrar a assinatura do método
         if method_name == class_name:
              # Construtor
              pattern = r"(?:public|protected|private|\s)*\s+" + re.escape(method_name) + r"\s*\("
@@ -93,16 +92,16 @@ class GetCode:
             
         start_index = match.start()
         
-        # Encontrar o início do corpo do método '{'
+        # Find the start of the method body '{'
         open_brace_index = code.find('{', start_index)
         if open_brace_index == -1:
-            # Pode ser método abstrato ou interface
+            # Can be abstract method or interface
             end_index = code.find(';', start_index)
             if end_index != -1:
                 return code[start_index:end_index+1]
             return "Erro: Corpo do método não encontrado."
             
-        # Contar chaves para achar o fim
+        # Count opening and closing braces
         brace_count = 0
         i = open_brace_index
         
@@ -119,9 +118,9 @@ class GetCode:
 
 
 
-if __name__ == "__main__":
-    getCode = GetCode()    
-    print(getCode.get_class_code("1_tullibee.src.main.java.com.ib.client.com.ib.client.Execution.equals")) 
-    pass
+# if __name__ == "__main__":
+#     getCode = GetCode()    
+#     print(getCode.get_class_code("1_tullibee.src.main.java.com.ib.client.com.ib.client.Execution.equals")) 
+#     pass
 
 
