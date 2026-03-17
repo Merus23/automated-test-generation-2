@@ -13,7 +13,9 @@ class ModelManager:
     """
     
     def __init__(self):
-         self.BASE_DIR = Path(__file__).resolve().parent
+        self.BASE_DIR = Path(__file__).resolve().parent
+        self._loaded_model_name = None
+        self._generator = None
 
     def list_hf_models(self):
         """Lists all available models in the authenticated Hugging Face account."""
