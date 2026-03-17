@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from get_database_files import GetDatabaseFiles
 from get_code import GetCode
@@ -28,7 +29,7 @@ class ExperimentsManager:
 
         methods = db_files.extract_from_project(self.project_path)
 
-        class_tests = {}
+        output_base = Path(self.project_output_path).resolve()
 
         for method_path in methods:
             code = get_code.get_code(method_path)
@@ -46,18 +47,11 @@ class ExperimentsManager:
             class_name = parts[-2]
             method_name = parts[-1]
 
-            key = (project_name, class_name)
-            if key not in class_tests:
-                class_tests[key] = []
-            class_tests[key].append(f"// {method_name}\n{proned_code}")
+            output_file = output_base / project_name / f"{class_name}Test.java"
+            output_file.parent.mkdir(parents=True, exist_ok=True)
 
-        for (project_name, class_name), tests in class_tests.items():
-            output_file = os.path.join(
-                self.project_output_path,
-                project_name,
-                f"{class_name}Test.java"
-            )
-            model_manager.save_code_to_file("\n\n".join(tests), output_file)
+            with open(output_file, "a", encoding="utf-8") as f:
+                f.write(f"// {method_name}\n{proned_code}\n\n")
 
     def execute_test_smell_detection(self, project_path: str) -> str:
         """
@@ -79,5 +73,5 @@ if __name__ == "__main__":
     exp = ExperimentsManager()
     exp.model_name = "Qwen_Qwen2.5-Coder-0.5B-Instruct"
     exp.project_path = "/home/mateus-silva/Documents/MasterDegree/files/localLLM/SF110"
-    exp.project_output_path = "output"
+    exp.project_output_path = Path(__file__).resolve().parent / "output"
     exp.create_test_generation_experiment()
