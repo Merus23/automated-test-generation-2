@@ -70,6 +70,10 @@ class ModelManager:
     def run_model(self, model_name, prompt) -> str:
         """Loads a locally saved model and runs text generation from a prompt.
 
+        Caches the loaded model in the instance so it is not reloaded on every
+        call. If a different model is requested, the previous one is released
+        from memory before loading the new one.
+
         Args:
             model_name: Name of the model directory inside models/.
             prompt: Input text for the model.
@@ -80,32 +84,39 @@ class ModelManager:
         Raises:
             ValueError: If the model does not exist in the models/ directory.
         """
+        import gc
+        import torch
+
         MODEL_PATH = os.path.join(self.BASE_DIR, "models", model_name)
-        
+
         if not os.path.exists(MODEL_PATH):
             raise ValueError(f"Model {model_name} does not exist at {MODEL_PATH}")
-        
-        print(f"Loading model from {MODEL_PATH}...")
-        
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-        model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
 
-    
-        generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
+        if self._loaded_model_name != model_name:
+            self._generator = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-        # print(f"Running model {model_name} with prompt: {prompt}")
+            print(f"Loading model from {MODEL_PATH}...")
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+            model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
+            self._generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
+            self._loaded_model_name = model_name
+
         print("Running model...")
 
         # max_new_tokens: limits the size of the generated code
         # temperature: 0.2 for more precise/deterministic output (good for code)
-        output = generator(
-            prompt, 
-            max_new_tokens=512, 
-            do_sample=True, 
+        print("Prompt:\n", prompt)
+        output = self._generator(
+            prompt,
+            max_new_tokens=512,
+            do_sample=True,
             temperature=0.2,
             truncation=True
         )
-        
+
         generated_text = output[0]['generated_text']
         return generated_text
 
