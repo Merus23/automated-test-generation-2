@@ -153,14 +153,16 @@ class ModelManager:
         print(f"Code saved to {path}")
 
 
-
-if __name__ == "__main__":
-    manager = ModelManager()
-    #models = manager.list_hf_models()
-    #manager.download_model("Qwen/Qwen2.5-Coder-0.5B-Instruct")
+# -------------------------
+# Example usage:
+# -------------------------
+# if __name__ == "__main__":
+#     manager = ModelManager()
+#     models = manager.list_hf_models()
+#     manager.download_model("Qwen/Qwen2.5-Coder-0.5B-Instruct")
     
-    prompt = "Write a fibonacci function in Java. Return only the code, without explanations."
-    response = manager.run_model("Qwen_Qwen2.5-Coder-0.5B-Instruct", prompt)
-    proned_code = manager.prone_code_generated(response)
-    manager.save_code_to_file(proned_code, "output/Fibonacci.java")
-    print(proned_code)
+#     prompt = "Write a fibonacci function in Java. Return only the code, without explanations."
+#     response = manager.run_model("Qwen_Qwen2.5-Coder-0.5B-Instruct", prompt)
+#     proned_code = manager.prone_code_generated(response)
+#     manager.save_code_to_file(proned_code, "output/Fibonacci.java")
+#     print(proned_code)

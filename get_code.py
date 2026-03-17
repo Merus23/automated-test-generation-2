@@ -117,7 +117,9 @@ class GetCode:
         return "Erro: Chaves desbalanceadas."
 
 
-
+# -------------------------
+# Example usage:
+# -------------------------
 # if __name__ == "__main__":
 #     getCode = GetCode()    
 #     print(getCode.get_class_code("1_tullibee.src.main.java.com.ib.client.com.ib.client.Execution.equals")) 

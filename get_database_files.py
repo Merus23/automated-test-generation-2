@@ -144,13 +144,13 @@ class GetDatabaseFiles:
 # -------------------------
 # Example usage:
 # -------------------------
-if __name__ == "__main__":
-    path = "/media/mateus/Backup IC/code/Mateus_dissertacao_implementacao/SF110/1_tullibee" 
-    try:
-        extractor = GetDatabaseFiles()
-        results = extractor.extract_from_project(path)
-        for r in results:
-            print(r)
-    except FileNotFoundError:
-        print("Invalid path!")
-        exit(1)
+# if __name__ == "__main__":
+#     path = "/media/mateus/Backup IC/code/Mateus_dissertacao_implementacao/SF110/1_tullibee" 
+#     try:
+#         extractor = GetDatabaseFiles()
+#         results = extractor.extract_from_project(path)
+#         for r in results:
+#             print(r)
+#     except FileNotFoundError:
+#         print("Invalid path!")
+#         exit(1)
