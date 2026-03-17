@@ -108,11 +108,48 @@ class ModelManager:
         return generated_text
 
 
-    def prone_code_generated(code) -> str:
-        """Most identify the python code and remove any extra text."""
-        
-        # TODO implement this function
-        return code
+    def prone_code_generated(self, code) -> str:
+        """Identifies the generated Java code and removes any surrounding extra text.
+
+        Args:
+            code: Raw text returned by the model, which may contain explanations or extra formatting.
+
+        Returns:
+            Only the extracted Java code block.
+        """
+        import re
+
+        # Try to extract code from markdown fenced blocks (```java ... ``` or ``` ... ```)
+        fenced_match = re.search(r"```(?:java)?\s*\n(.*?)```", code, re.DOTALL)
+        if fenced_match:
+            return fenced_match.group(1).strip()
+
+        # Fallback: find the first Java-like construct and return from there
+        java_start = re.search(
+            r"^(import\s+[\w.]+;|public\s|class\s|interface\s|enum\s|@[\w]+)",
+            code,
+            re.MULTILINE,
+        )
+        if java_start:
+            return code[java_start.start():].strip()
+
+        return code.strip()
+    
+    def save_code_to_file(self, code: str, file_path: str):
+        """Saves the generated code to a file at the specified path.
+
+        Args:
+            code: Code to be saved.
+            file_path: Full path of the destination file (e.g. 'output/MyClass.java').
+        """
+        path = Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(code)
+
+        print(f"Code saved to {path}")
+
 
 
 if __name__ == "__main__":
@@ -120,6 +157,8 @@ if __name__ == "__main__":
     #models = manager.list_hf_models()
     #manager.download_model("Qwen/Qwen2.5-Coder-0.5B-Instruct")
     
-    prompt = "Write a fibonacci function in Python. Returne only the code, without explanations."
+    prompt = "Write a fibonacci function in Java. Return only the code, without explanations."
     response = manager.run_model("Qwen_Qwen2.5-Coder-0.5B-Instruct", prompt)
-    print(response)
+    proned_code = manager.prone_code_generated(response)
+    manager.save_code_to_file(proned_code, "output/Fibonacci.java")
+    print(proned_code)
