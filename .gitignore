@@ -5,3 +5,4 @@ models/*
 /output/*  
 .claude
 commands.txt
+generated_tests
