@@ -16,6 +16,7 @@ from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from huggingface_hub import snapshot_download
 from dotenv import load_dotenv
+from prompt_manager import PromptManager
 
 load_dotenv()
 
@@ -82,11 +83,16 @@ class ModelManager:
             self._loaded_model_name = model_name
 
         print("Executando modelo...")
-        messages = [{"role": "user", "content": prompt}]
+        system_prompt = PromptManager().get_system_prompt()
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
         text = self._tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
+            enable_thinking=False,
         )
         model_inputs = self._tokenizer([text], return_tensors="pt").to(self._model.device)
 
