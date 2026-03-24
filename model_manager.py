@@ -87,7 +87,6 @@ class ModelManager:
             messages,
             tokenize=False,
             add_generation_prompt=True,
-            enable_thinking=True,
         )
         model_inputs = self._tokenizer([text], return_tensors="pt").to(self._model.device)
 
@@ -95,15 +94,9 @@ class ModelManager:
             **model_inputs,
             max_new_tokens=2048,
         )
-        output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
+        output_ids = generated_ids[0][len(model_inputs.input_ids[0]):]
 
-        # Remove conteúdo de "thinking" (token </think> id 151668)
-        try:
-            index = len(output_ids) - output_ids[::-1].index(151668)
-        except ValueError:
-            index = 0
-
-        content = self._tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
+        content = self._tokenizer.decode(output_ids, skip_special_tokens=True).strip("\n")
         return content
 
     def extract_java_code(self, raw_output: str) -> str:
