@@ -40,24 +40,26 @@ class JavaContextExtractor:
         self,
         class_name: str,
         method_name: str,
+        prompt_type: str = "zero_shot",
         include_field_types: bool = True,
         max_dependent_classes: int = 3,
         junit_version: str = "JUnit 5",
         extra_instructions: str = "",
     ) -> Optional[str]:
         """
-        Monta o prompt completo para geração de testes.
+        Builds the complete prompt for test generation.
 
         Args:
-            class_name:              Nome simples ou completo da classe alvo.
-            method_name:             Nome do método focal.
-            include_field_types:     Se True, inclui assinaturas de classes de campo.
-            max_dependent_classes:   Limite de classes dependentes a incluir.
-            junit_version:           Framework de testes a usar.
-            extra_instructions:      Instruções adicionais customizadas.
+            class_name:              Simple or fully-qualified target class name.
+            method_name:             Focal method name.
+            prompt_type:             Prompt strategy to use (see PromptManager.PROMPT_TYPES).
+            include_field_types:     If True, includes field class signatures.
+            max_dependent_classes:   Max number of dependent classes to include.
+            junit_version:           Test framework to target.
+            extra_instructions:      Optional custom instructions appended to the prompt.
 
         Returns:
-            String com o prompt completo, ou None se classe/método não encontrado.
+            Complete prompt string, or None if the class/method is not found.
         """
         class_info = self.index.get_class(class_name)
         if not class_info:
@@ -75,7 +77,8 @@ class JavaContextExtractor:
             class_info, focal_method, max_dependent_classes
         )
 
-        return self._prompt_manager.get_zero_shot_prompt(
+        return self._prompt_manager.build_prompt(
+            prompt_type,
             class_info=class_info,
             focal_method=focal_method,
             called_methods=called_methods,

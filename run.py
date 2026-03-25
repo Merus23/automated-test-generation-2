@@ -146,7 +146,8 @@ def run_inline_example():
 
 
 def run_sf110(base_path: str, class_name: str, method_name: str,
-              output_file: str = None, junit: str = "JUnit 5"):
+              output_file: str = None, junit: str = "JUnit 5",
+              prompt_type: str = "zero_shot"):
     """Runs the extractor on the real SF110 codebase."""
     print(f"[SF110] Base: {base_path}")
     print(f"[SF110] Class: {class_name} | Method: {method_name}")
@@ -157,6 +158,7 @@ def run_sf110(base_path: str, class_name: str, method_name: str,
     prompt = extractor.build_prompt(
         class_name=class_name,
         method_name=method_name,
+        prompt_type=prompt_type,
         junit_version=junit,
     )
 
@@ -172,7 +174,8 @@ def run_sf110(base_path: str, class_name: str, method_name: str,
         print(prompt)
 
 
-def batch_extract(base_path: str, output_dir: str, max_methods: int = 100):
+def batch_extract(base_path: str, output_dir: str, max_methods: int = 100,
+                  prompt_type: str = "zero_shot"):
     """
     Extracts prompts in batch for all methods in the codebase.
     Useful for generating the complete experiment dataset.
@@ -192,6 +195,7 @@ def batch_extract(base_path: str, output_dir: str, max_methods: int = 100):
             prompt = extractor.build_prompt(
                 class_name=class_info.class_name,
                 method_name=method.name,
+                prompt_type=prompt_type,
             )
 
             if prompt:
@@ -235,17 +239,21 @@ def main():
 
     # Subcommand: extract single prompt
     single = subparsers.add_parser("extract", help="Extract prompt for a specific method")
-    single.add_argument("--base",   required=True, help="Path to Java codebase (e.g. /data/sf110)")
-    single.add_argument("--class",  required=True, dest="class_name", help="Class name")
-    single.add_argument("--method", required=True, help="Method name")
-    single.add_argument("--output", default=None,  help="Output file (optional)")
-    single.add_argument("--junit",  default="JUnit 5", help="JUnit version (default: JUnit 5)")
+    single.add_argument("--base",        required=True, help="Path to Java codebase (e.g. /data/sf110)")
+    single.add_argument("--class",       required=True, dest="class_name", help="Class name")
+    single.add_argument("--method",      required=True, help="Method name")
+    single.add_argument("--output",      default=None,  help="Output file (optional)")
+    single.add_argument("--junit",       default="JUnit 5", help="JUnit version (default: JUnit 5)")
+    single.add_argument("--prompt-type", default="zero_shot",
+                        help="Prompt strategy to use (default: zero_shot)")
 
     # Subcommand: batch extract prompts
     batch = subparsers.add_parser("batch", help="Extract prompts in batch for the whole codebase")
-    batch.add_argument("--base",       required=True, help="Path to Java codebase")
-    batch.add_argument("--output-dir", required=True, help="Output directory")
-    batch.add_argument("--max",        type=int, default=100, help="Max methods (default: 100)")
+    batch.add_argument("--base",        required=True, help="Path to Java codebase")
+    batch.add_argument("--output-dir",  required=True, help="Output directory")
+    batch.add_argument("--max",         type=int, default=100, help="Max methods (default: 100)")
+    batch.add_argument("--prompt-type", default="zero_shot",
+                       help="Prompt strategy to use (default: zero_shot)")
 
     # Subcommand: download model
     dl = subparsers.add_parser("download", help="Download model from Hugging Face")
@@ -269,9 +277,10 @@ def main():
     if args.command == "example" or args.command is None:
         run_inline_example()
     elif args.command == "extract":
-        run_sf110(args.base, args.class_name, args.method, args.output, args.junit)
+        run_sf110(args.base, args.class_name, args.method, args.output, args.junit,
+                  args.prompt_type)
     elif args.command == "batch":
-        batch_extract(args.base, args.output_dir, args.max)
+        batch_extract(args.base, args.output_dir, args.max, args.prompt_type)
     elif args.command == "download":
         manager = ModelManager()
         manager.download_model(args.model_id)

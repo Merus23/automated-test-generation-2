@@ -17,14 +17,19 @@ class PromptManager:
     def __init__(self):
         pass
 
+    PROMPT_TYPES = ("zero_shot",)
+
     def get_system_prompt(self) -> str:
         return self.SYSTEM_PROMPT
 
-    # def get_zero_shot_prompt(self, code) -> str:
-    #     return f"Write a test case for the following code:\n{code} \n\n Write only the test case code, without explanations."
-
-    def another_prompt_method(self, code) -> str:
-        return f"{code}"
+    def build_prompt(self, prompt_type: str, **kwargs) -> str:
+        """Dispatch to the prompt builder selected by *prompt_type*."""
+        if prompt_type == "zero_shot":
+            return self.get_zero_shot_prompt(**kwargs)
+        raise ValueError(
+            f"Unknown prompt type '{prompt_type}'. "
+            f"Available: {', '.join(self.PROMPT_TYPES)}"
+        )
 
     def get_zero_shot_prompt(
         self,

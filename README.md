@@ -36,11 +36,29 @@ python run.py example
 python run.py extract --base /path/to/sf110 --class MyClass --method myMethod --junit "JUnit 5" --output prompt.txt
 ```
 
+Use `--prompt-type` to select the prompt strategy (default: `zero_shot`):
+
+```bash
+python run.py extract --base /path/to/sf110 --class MyClass --method myMethod --prompt-type zero_shot
+```
+
 ### Extract prompts in batch
 
 ```bash
 python run.py batch --base /path/to/sf110 --output-dir output --max 100
 ```
+
+Use `--prompt-type` to apply a specific prompt strategy to all extracted prompts:
+
+```bash
+python run.py batch --base /path/to/sf110 --output-dir output --max 100 --prompt-type zero_shot
+```
+
+#### Available prompt types
+
+| Type | Description |
+|------|-------------|
+| `zero_shot` | Structured prompt with class declaration, focal method, helper signatures, dependent classes, and generation instructions |
 
 ### Download a model from Hugging Face
 
