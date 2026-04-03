@@ -1,10 +1,10 @@
 """
-Java Context Extractor — Construtor de Prompts para LLMs
-=========================================================
-Monta prompts estruturados para geração de testes unitários com LLMs,
-a partir do contexto extraído pelo JavaParser e CodebaseIndex.
+Java Context Extractor — Prompt Builder for LLMs
+=================================================
+Builds structured prompts for LLM-based unit test generation
+from context extracted by JavaParser and CodebaseIndex.
 
-Uso:
+Usage:
     extractor = JavaContextExtractor(base_path="/path/to/sf110")
     prompt = extractor.build_prompt("com.example.MyClass", "myMethod")
     print(prompt)
@@ -23,9 +23,9 @@ from prompt_manager import PromptManager
 
 class JavaContextExtractor:
     """
-    Extrai o contexto necessário para geração de testes com LLMs e monta o prompt.
+    Extracts the context required for LLM-based test generation and assembles the prompt.
 
-    Exemplo de uso:
+    Example usage:
         extractor = JavaContextExtractor("/path/to/sf110")
         prompt = extractor.build_prompt("com.example.MyClass", "myMethod")
     """
@@ -63,15 +63,15 @@ class JavaContextExtractor:
         """
         class_info = self.index.get_class(class_name)
         if not class_info:
-            print(f"[Extractor] Classe '{class_name}' não encontrada no índice.")
+            print(f"[Extractor] Class '{class_name}' not found in index.")
             return None
 
         focal_method = self._find_method(class_info, method_name)
         if not focal_method:
-            print(f"[Extractor] Método '{method_name}' não encontrado em '{class_name}'.")
+            print(f"[Extractor] Method '{method_name}' not found in '{class_name}'.")
             return None
 
-        # Coleta dependências
+        # Collect dependencies
         called_methods  = self._get_called_methods(class_info, focal_method)
         dependent_classes = self._get_dependent_classes(
             class_info, focal_method, max_dependent_classes
@@ -88,7 +88,7 @@ class JavaContextExtractor:
         )
 
     # ------------------------------------------------------------------ #
-    #  Extração de dependências                                            #
+    #  Dependency extraction                                               #
     # ------------------------------------------------------------------ #
 
     def _find_method(self, class_info: ClassInfo, method_name: str) -> Optional[MethodInfo]:
@@ -100,12 +100,12 @@ class JavaContextExtractor:
     def _get_called_methods(
         self, class_info: ClassInfo, focal_method: MethodInfo
     ) -> list[MethodInfo]:
-        """Retorna os métodos da mesma classe chamados pelo método focal (só assinatura)."""
+        """Returns methods of the same class called by the focal method (signatures only)."""
         calls = self._parser.extract_method_calls(focal_method.body)
         result = []
         for m in class_info.methods:
             if m.name in calls and m.name != focal_method.name:
-                # Inclui apenas a assinatura, sem o corpo
+                # Include signature only, without the body
                 result.append(MethodInfo(
                     name=m.name,
                     return_type=m.return_type,
@@ -122,7 +122,7 @@ class JavaContextExtractor:
         focal_method: MethodInfo,
         max_classes: int,
     ) -> list[ClassInfo]:
-        """Resolve e retorna classes dependentes (tipos usados no método e nos campos)."""
+        """Resolves and returns dependent classes (types used in the method and in fields)."""
         types_used = self._parser.extract_types_used(
             focal_method.body, class_info.fields, focal_method.parameters
         )

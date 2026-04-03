@@ -23,7 +23,7 @@ class PromptManager:
         return self.SYSTEM_PROMPT
 
     def build_prompt(self, prompt_type: str, **kwargs) -> str:
-        """Dispatch to the prompt builder selected by *prompt_type*."""
+        """Dispatches to the prompt builder selected by *prompt_type*."""
         if prompt_type == "zero_shot":
             return self.get_zero_shot_prompt(**kwargs)
         raise ValueError(
@@ -44,8 +44,8 @@ class PromptManager:
 
         # --- Header ---
         sections.append(
-            f"Gere testes unitários {junit_version} com Mockito para o método abaixo.\n"
-            f"A classe alvo é `{class_info.class_name}` do pacote `{class_info.package}`.\n"
+            f"Generate {junit_version} unit tests with Mockito for the method below.\n"
+            f"The target class is `{class_info.class_name}` from package `{class_info.package}`.\n"
         )
 
         # --- Relevant imports ---
@@ -57,19 +57,19 @@ class PromptManager:
             sections.append("\n".join(f"import {i};" for i in relevant_imports))
 
         # --- Package and class declaration ---
-        sections.append("=== DECLARAÇÃO DA CLASSE ===")
+        sections.append("=== CLASS DECLARATION ===")
         sections.append(f"package {class_info.package};\n")
         sections.append(f"public class {class_info.class_name} {{")
 
         # --- Fields ---
         if class_info.fields:
-            sections.append("\n  // Campos")
+            sections.append("\n  // Fields")
             for f in class_info.fields:
                 sections.append(f"  {f.raw}")
 
         # --- Constructors ---
         if class_info.constructors:
-            sections.append("\n  // Construtores")
+            sections.append("\n  // Constructors")
             for c in class_info.constructors:
                 sections.append(f"  {c.signature} {{")
                 for line in c.body.strip().split('\n')[:10]:
@@ -79,7 +79,7 @@ class PromptManager:
         sections.append("}\n")
 
         # --- Focal method ---
-        sections.append("=== MÉTODO FOCAL (a ser testado) ===")
+        sections.append("=== FOCAL METHOD (to be tested) ===")
         sections.append(f"{focal_method.modifiers} {focal_method.return_type} "
                         f"{focal_method.name}({focal_method.parameters}) {{")
         sections.append(focal_method.body)
@@ -87,14 +87,14 @@ class PromptManager:
 
         # --- Helper methods (signatures only) ---
         if called_methods:
-            sections.append("=== MÉTODOS AUXILIARES CHAMADOS (apenas assinaturas) ===")
+            sections.append("=== HELPER METHODS CALLED (signatures only) ===")
             for m in called_methods:
                 sections.append(f"{m.signature};")
             sections.append("")
 
         # --- Dependent classes ---
         if dependent_classes:
-            sections.append("=== CLASSES DEPENDENTES (campos e assinaturas) ===")
+            sections.append("=== DEPENDENT CLASSES (fields and signatures) ===")
             for dep in dependent_classes:
                 sections.append(f"// {dep.full_name}")
                 sections.append(f"public class {dep.class_name} {{")
@@ -105,21 +105,21 @@ class PromptManager:
                 sections.append("}\n")
 
         # --- Generation instructions ---
-        sections.append("=== INSTRUÇÕES ===")
+        sections.append("=== INSTRUCTIONS ===")
         instructions = [
-            f"- Use {junit_version} e Mockito",
-            "- Cubra: happy path, valores nulos/vazios e casos de borda",
-            "- Mocke todas as dependências externas com @Mock / Mockito.mock()",
-            "- Use apenas os métodos e campos listados acima; não invente APIs",
-            "- Cada teste deve ter um nome descritivo no padrão: "
-            "  `dado_<contexto>_quando_<ação>_entao_<resultado>`",
-            "- Adicione um comentário explicando o objetivo de cada teste",
+            f"- Use {junit_version} and Mockito",
+            "- Cover: happy path, null/empty values, and edge cases",
+            "- Mock all external dependencies with @Mock / Mockito.mock()",
+            "- Use only the methods and fields listed above; do not invent APIs",
+            "- Each test must have a descriptive name following the pattern: "
+            "  `given_<context>_when_<action>_then_<result>`",
+            "- Add a comment explaining the purpose of each test",
         ]
         if extra_instructions:
             instructions.append(f"- {extra_instructions}")
 
         sections.append("\n".join(instructions))
-        sections.append("\nGere apenas o código Java, sem explicações adicionais.")
+        sections.append("\nGenerate only the Java code, without any additional explanations.")
 
         return "\n".join(sections)
 
