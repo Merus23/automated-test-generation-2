@@ -3,3 +3,6 @@
 __pycache__/
 models/*
 /output/*  
+.claude
+commands.txt
+generated_tests
