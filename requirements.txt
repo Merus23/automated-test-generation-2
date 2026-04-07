@@ -52,3 +52,4 @@ typer-slim==0.21.1
 typing_extensions==4.15.0
 urllib3==2.6.3
 Werkzeug==3.1.5
+lizard==1.21.3
