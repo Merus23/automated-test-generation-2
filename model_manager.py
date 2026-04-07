@@ -151,15 +151,33 @@ class ModelManager:
     def run_batch(self, model_name: str, input_dir: str, output_dir: str, max_files: int = 100):
         """Runs the model over all .txt prompt files in a directory.
 
+        Each generated test is saved to:
+            <output_dir>/<sut_project>/<FocalClass>_<focalMethod>_<hash>/test.java
+
+        A metadata.json is also saved alongside each test.java with fields required
+        by the evaluation pipeline. SUT information is read from batch_metadata.json
+        in the input directory (produced by batch_extract).
+
         Args:
             model_name: Model directory name.
             input_dir: Directory containing .txt prompt files.
             output_dir: Output directory for generated tests.
             max_files: Maximum number of files to process.
         """
+        import hashlib
+        from datetime import datetime
+
         in_path = Path(input_dir)
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
+
+        # Load batch metadata produced by batch_extract (may be absent for legacy runs)
+        batch_meta_path = in_path / "batch_metadata.json"
+        batch_meta_by_file: dict = {}
+        if batch_meta_path.exists():
+            with open(batch_meta_path, encoding="utf-8") as f:
+                for entry in json.load(f):
+                    batch_meta_by_file[entry["prompt_file"]] = entry
 
         prompt_files = sorted(in_path.glob("*.txt"))[:max_files]
         results = []
@@ -167,9 +185,61 @@ class ModelManager:
         for i, pf in enumerate(prompt_files):
             print(f"\n[{i + 1}/{len(prompt_files)}] Processing {pf.name}...")
             try:
-                out_file = out_path / pf.name.replace(".txt", ".java")
-                code = self.run_from_file(model_name, str(pf), str(out_file))
-                results.append({"file": pf.name, "output": str(out_file), "status": "ok", "length": len(code)})
+                code = self.run_from_file(model_name, str(pf))
+
+                # Build per-test directory
+                meta_entry = batch_meta_by_file.get(pf.name, {})
+                source_path = meta_entry.get("source_path", "")
+                base_path_str = meta_entry.get("base_path", "")
+                package = meta_entry.get("package", "")
+                focal_class = meta_entry.get("class", pf.stem.split("_")[1] if "_" in pf.stem else pf.stem)
+                # class field may be fully qualified; take simple name
+                focal_class_simple = focal_class.split(".")[-1] if focal_class else pf.stem
+                focal_method = meta_entry.get("method", "unknown")
+
+                # Derive sut_artifact_id from source_path relative to base_path
+                sut_artifact_id = "unknown"
+                if source_path and base_path_str:
+                    try:
+                        rel = Path(source_path).relative_to(base_path_str)
+                        sut_artifact_id = rel.parts[0]
+                    except ValueError:
+                        sut_artifact_id = Path(source_path).parts[-4] if len(Path(source_path).parts) >= 4 else "unknown"
+
+                # Unique hash based on model + prompt file
+                uid = hashlib.md5(f"{model_name}:{pf.name}".encode()).hexdigest()[:8]
+                test_dir_name = f"{focal_class_simple}_{focal_method}_{uid}"
+                test_dir = out_path / sut_artifact_id / test_dir_name
+                test_dir.mkdir(parents=True, exist_ok=True)
+
+                # Save test.java
+                test_java_path = test_dir / "test.java"
+                test_java_path.write_text(code, encoding="utf-8")
+
+                # Save metadata.json
+                metadata = {
+                    "sut_project":     sut_artifact_id,
+                    "sut_class_path":  source_path,
+                    "sut_package":     package,
+                    "sut_artifact_id": sut_artifact_id,
+                    "focal_method":    focal_method,
+                    "focal_class":     focal_class_simple,
+                    "model":           model_name,
+                    "prompt_type":     meta_entry.get("prompt_type", "zero_shot"),
+                    "generated_at":    datetime.now().isoformat(timespec="seconds"),
+                }
+                metadata_path = test_dir / "metadata.json"
+                with open(metadata_path, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+                results.append({
+                    "file": pf.name,
+                    "output": str(test_java_path),
+                    "test_dir": str(test_dir),
+                    "status": "ok",
+                    "length": len(code),
+                })
+                print(f"  Saved to {test_dir}")
             except Exception as e:
                 print(f"  ERROR: {e}")
                 results.append({"file": pf.name, "status": "error", "error": str(e)})
