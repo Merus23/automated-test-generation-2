@@ -2,12 +2,14 @@
 CLI for the Java test generation pipeline.
 
 Subcommands:
-    example   — Run inline example (no external codebase needed)
-    extract   — Extract a prompt for a specific method
-    batch     — Extract prompts in batch for all methods in a codebase
-    download  — Download a model from Hugging Face
-    generate  — Generate a test from a single prompt file using a local LLM
+    example        — Run inline example (no external codebase needed)
+    extract        — Extract a prompt for a specific method
+    batch          — Extract prompts in batch for all methods in a codebase
+    download       — Download a model from Hugging Face
+    generate       — Generate a test from a single prompt file using a local LLM
     generate-batch — Generate tests in batch from a directory of prompt files
+    evaluate       — Evaluate a single generated test
+    evaluate-batch — Evaluate all generated tests in a directory
 
 Usage:
     python run.py example
@@ -16,6 +18,8 @@ Usage:
     python run.py download --model-id Qwen/Qwen3-0.5B
     python run.py generate --model Qwen_Qwen3-0.5B --prompt output/0007_DocumentSet_wordFrequency.txt
     python run.py generate-batch --model Qwen_Qwen3-0.5B --input-dir output --output-dir generated_tests
+    python run.py evaluate --test-dir generated_tests/1_tullibee/Foo_calculateTotal_abc123/
+    python run.py evaluate-batch --tests-dir generated_tests/ --output-csv evaluation_results.csv
 """
 
 import argparse
@@ -28,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from java_parser import JavaParser, CodebaseIndex
 from context_extractor import JavaContextExtractor
 from model_manager import ModelManager
+from evaluator import evaluate_test, evaluate_batch
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +210,10 @@ def batch_extract(base_path: str, output_dir: str, max_methods: int = 100,
                     "method": method.name,
                     "signature": method.signature,
                     "prompt_length": len(prompt),
-                    "prompt_file": f"{count:04d}_{class_info.class_name}_{method.name}.txt"
+                    "prompt_file": f"{count:04d}_{class_info.class_name}_{method.name}.txt",
+                    "source_path": class_info.source_path,
+                    "package": class_info.package,
+                    "base_path": base_path,
                 }
 
                 (out / entry["prompt_file"]).write_text(prompt, encoding='utf-8')
@@ -272,6 +280,16 @@ def main():
     gen_batch.add_argument("--output-dir", required=True, help="Output directory for generated tests")
     gen_batch.add_argument("--max",        type=int, default=100, help="Max files (default: 100)")
 
+    # Subcommand: evaluate a single generated test
+    ev = subparsers.add_parser("evaluate", help="Evaluate a single generated test")
+    ev.add_argument("--test-dir",  required=True, help="Directory containing test.java and metadata.json")
+    ev.add_argument("--keep-temp", action="store_true", help="Keep the temporary Maven project after evaluation")
+
+    # Subcommand: evaluate all generated tests in a directory
+    ev_batch = subparsers.add_parser("evaluate-batch", help="Evaluate all generated tests in a directory")
+    ev_batch.add_argument("--tests-dir",   required=True, help="Root directory containing generated tests (e.g. generated_tests/)")
+    ev_batch.add_argument("--output-csv",  default="evaluation_results.csv", help="Path for consolidated CSV report (default: evaluation_results.csv)")
+
     args = parser.parse_args()
 
     if args.command == "example" or args.command is None:
@@ -293,6 +311,11 @@ def main():
     elif args.command == "generate-batch":
         manager = ModelManager()
         manager.run_batch(args.model, args.input_dir, args.output_dir, args.max)
+    elif args.command == "evaluate":
+        result = evaluate_test(args.test_dir, keep_temp=args.keep_temp)
+        print(f"\nquality_score = {result['quality_score']}")
+    elif args.command == "evaluate-batch":
+        evaluate_batch(args.tests_dir, args.output_csv)
     else:
         parser.print_help()
 
