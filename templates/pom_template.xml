@@ -7,6 +7,12 @@
   <artifactId>eval-${eval_id}</artifactId>
   <version>1.0</version>
 
+  <properties>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
   <dependencies>
     <!-- SUT installed via: mvn install:install-file -->
     <dependency>
@@ -23,6 +29,14 @@
       <scope>test</scope>
     </dependency>
 
+    <!-- JUnit 4 (LLM-generated tests often mix JUnit 4 imports) -->
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+
     <!-- Mockito -->
     <dependency>
       <groupId>org.mockito</groupId>
@@ -35,11 +49,18 @@
   <build>
     <plugins>
 
-      <!-- Surefire: required to run JUnit 5 tests -->
+      <!-- Surefire: supports both JUnit 4 and JUnit 5 -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.1.2</version>
+        <dependencies>
+          <dependency>
+            <groupId>org.junit.vintage</groupId>
+            <artifactId>junit-vintage-engine</artifactId>
+            <version>5.10.0</version>
+          </dependency>
+        </dependencies>
       </plugin>
 
       <!-- JaCoCo: line and branch coverage -->
@@ -60,6 +81,30 @@
         </executions>
       </plugin>
 
+      <!-- Unpack SUT JAR into target/classes so JaCoCo can report coverage against it -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>unpack-sut</id>
+            <phase>generate-test-sources</phase>
+            <goals><goal>unpack</goal></goals>
+            <configuration>
+              <artifactItems>
+                <artifactItem>
+                  <groupId>sf110</groupId>
+                  <artifactId>${sut_artifact_id}</artifactId>
+                  <version>1.0</version>
+                  <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                </artifactItem>
+              </artifactItems>
+              <excludes>META-INF/**</excludes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
       <!-- PIT: mutation testing -->
       <plugin>
         <groupId>org.pitest</groupId>
@@ -73,8 +118,16 @@
           </dependency>
         </dependencies>
         <configuration>
-          <targetClasses><param>${sut_package}.*</param></targetClasses>
-          <targetTests><param>*GeneratedTest*</param></targetTests>
+          <targetClasses><param>${pit_target_classes}</param></targetClasses>
+          <!-- **.*Test* matches packaged tests; *Test* matches default-package tests -->
+          <targetTests>
+            <param>**.*Test*</param>
+            <param>*Test*</param>
+          </targetTests>
+          <!-- Required when SUT is unpacked from JAR (no src/main/java present) -->
+          <mutableCodePaths>
+            <mutableCodePath>${project.build.outputDirectory}</mutableCodePath>
+          </mutableCodePaths>
           <outputFormats><outputFormat>XML</outputFormat></outputFormats>
           <timestampedReports>false</timestampedReports>
         </configuration>
