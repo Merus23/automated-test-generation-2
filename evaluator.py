@@ -19,6 +19,7 @@ Usage:
 import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -39,20 +40,19 @@ M2_REPO = Path.home() / ".m2" / "repository"
 TSDETECT_JAR = BASE_DIR / "TestSmellDetector" / "target" / "TestSmellDetector-0.1-jar-with-dependencies.jar"
 POM_TEMPLATE_PATH = BASE_DIR / "templates" / "pom_template.xml"
 
-# JUnit 5 / Mockito jars used for javac classpath
-_JUNIT_JAR = M2_REPO / "org/junit/jupiter/junit-jupiter/5.10.0/junit-jupiter-5.10.0.jar"
-_MOCKITO_JAR = M2_REPO / "org/mockito/mockito-core/5.5.0/mockito-core-5.5.0.jar"
-
+# Fields that must be present AND non-empty
 REQUIRED_METADATA_FIELDS = [
     "sut_project",
     "sut_class_path",
-    "sut_package",
     "sut_artifact_id",
     "focal_method",
     "focal_class",
     "model",
     "prompt_type",
 ]
+
+# Fields that must be present but may be empty (e.g. default package → sut_package = "")
+OPTIONAL_PRESENT_FIELDS = ["sut_package"]
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,24 @@ def load_metadata(test_dir: str) -> dict:
             f"metadata.json in '{test_dir}' is missing required fields: {missing}"
         )
 
+    absent = [field for field in OPTIONAL_PRESENT_FIELDS if field not in metadata]
+    if absent:
+        raise ValueError(
+            f"metadata.json in '{test_dir}' is missing keys: {absent}"
+        )
+
     return metadata
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _extract_class_name(test_java_path: str) -> str:
+    """Returns the public class name declared in test.java, or 'GeneratedTest'."""
+    content = Path(test_java_path).read_text(encoding="utf-8")
+    match = re.search(r'\bpublic\s+class\s+(\w+)', content)
+    return match.group(1) if match else "GeneratedTest"
 
 
 # ---------------------------------------------------------------------------
@@ -113,18 +130,24 @@ def create_maven_project(test_dir: str, metadata: dict) -> str:
     test_src_dir = project_dir / "src" / "test" / "java"
     test_src_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy test.java into the Maven project
+    # Copy test.java into the Maven project using the declared class name as filename.
+    # javac requires that a public class Foo resides in Foo.java.
     src_test = Path(test_dir) / "test.java"
-    dst_test = test_src_dir / "GeneratedTest.java"
+    class_name = _extract_class_name(str(src_test))
+    dst_test = test_src_dir / f"{class_name}.java"
     shutil.copy2(src_test, dst_test)
 
     # Render pom.xml from template
+    sut_package = metadata["sut_package"]
+    # PIT targetClasses glob: "pkg.*" for named packages, "*" for the default package
+    pit_target_classes = f"{sut_package}.*" if sut_package else "*"
     pom_template = POM_TEMPLATE_PATH.read_text(encoding="utf-8")
     pom_content = (
         pom_template
         .replace("${eval_id}", eval_id)
         .replace("${sut_artifact_id}", metadata["sut_artifact_id"])
-        .replace("${sut_package}", metadata["sut_package"])
+        .replace("${sut_package}", sut_package)
+        .replace("${pit_target_classes}", pit_target_classes)
     )
     (project_dir / "pom.xml").write_text(pom_content, encoding="utf-8")
 
@@ -135,39 +158,33 @@ def create_maven_project(test_dir: str, metadata: dict) -> str:
 # Fase 2.3 — Compilability (gate metric)
 # ---------------------------------------------------------------------------
 
-def check_compilability(test_java_path: str, metadata: dict) -> dict:
-    """Checks whether the generated test compiles with javac.
+def check_compilability(maven_project_path: str) -> dict:
+    """Checks whether the generated test compiles via Maven (mvn test-compile).
 
-    Mounts a classpath with the SUT JAR and test dependencies from ~/.m2.
+    Using Maven instead of raw javac ensures all test dependencies (JUnit,
+    Mockito, SUT JAR) are resolved automatically from ~/.m2 or downloaded.
 
     Args:
-        test_java_path: Absolute path to test.java.
-        metadata: Validated metadata dict.
+        maven_project_path: Path to the temporary Maven project directory.
 
     Returns:
         {"compiles": bool, "errors": list[str]}
     """
-    sut_jar = (
-        M2_REPO
-        / "sf110"
-        / metadata["sut_artifact_id"]
-        / "1.0"
-        / f"{metadata['sut_artifact_id']}-1.0.jar"
-    )
-
-    classpath_parts = [str(sut_jar), str(_JUNIT_JAR), str(_MOCKITO_JAR)]
-    classpath = ":".join(classpath_parts)
-
     result = subprocess.run(
-        ["javac", "-cp", classpath, test_java_path],
+        ["mvn", "-f", str(Path(maven_project_path) / "pom.xml"), "test-compile"],
         capture_output=True,
         text=True,
     )
 
-    return {
-        "compiles": result.returncode == 0,
-        "errors": result.stderr.splitlines() if result.returncode != 0 else [],
-    }
+    if result.returncode != 0:
+        # Maven sends compiler errors to stdout; stderr has stack traces
+        errors = [
+            line for line in result.stdout.splitlines()
+            if "ERROR" in line or "error:" in line
+        ]
+        return {"compiles": False, "errors": errors}
+
+    return {"compiles": True, "errors": []}
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +223,9 @@ def check_coverage(maven_project_path: str) -> dict:
     root = tree.getroot()
 
     def _coverage(counter_type: str) -> float:
-        for counter in root.iter("counter"):
+        # Use report-level aggregate counters (direct children of <report>)
+        # instead of the first nested method-level counter.
+        for counter in root.findall("counter"):
             if counter.attrib.get("type") == counter_type:
                 missed = int(counter.attrib["missed"])
                 covered = int(counter.attrib["covered"])
@@ -249,15 +268,23 @@ def check_complexity(test_java_path: str) -> dict:
             text=True,
         )
 
+        # Lizard CSV has no header row; columns are fixed-position:
+        # NLOC, CCN, token_count, param_count, length, location,
+        # filename, FUNCTION_NAME, long_name, start_line, end_line
+        LIZARD_FIELDS = [
+            "NLOC", "CCN", "token_count", "param_count", "length",
+            "location", "filename", "FUNCTION_NAME", "long_name",
+            "start_line", "end_line",
+        ]
         methods = []
         if Path(csv_out).exists():
             with open(csv_out, encoding="utf-8") as f:
-                reader = csv.DictReader(f)
+                reader = csv.DictReader(f, fieldnames=LIZARD_FIELDS)
                 for row in reader:
                     try:
                         methods.append({
                             "method": row.get("FUNCTION_NAME", ""),
-                            "ccn": int(row.get("CYCLOMATIC_COMPLEXITY", 0)),
+                            "ccn": int(row.get("CCN", 0)),
                             "nloc": int(row.get("NLOC", 0)),
                             "tokens": int(row.get("token_count", 0)),
                         })
@@ -297,12 +324,12 @@ def check_test_smells(test_java_path: str, sut_class_path: str) -> dict:
         input_csv = Path(tmpdir) / "tsdetect_input.csv"
         output_csv = Path(tmpdir) / "tsdetect_output.csv"
 
+        # TsDetect does NOT expect a header row — first line is treated as data
         with open(input_csv, "w", encoding="utf-8") as f:
-            f.write("appName,testFilePath,productionFilePath\n")
             f.write(f"eval,{test_java_path},{sut_class_path}\n")
 
         result = subprocess.run(
-            ["java", "-jar", str(TSDETECT_JAR), str(input_csv)],
+            ["java", "-jar", str(TSDETECT_JAR), "-f", str(input_csv), "-o", str(output_csv)],
             capture_output=True,
             text=True,
             cwd=tmpdir,
@@ -312,30 +339,28 @@ def check_test_smells(test_java_path: str, sut_class_path: str) -> dict:
             print(f"  [TsDetect] Failed:\n{result.stderr[-500:]}")
             return {"smells_detected": [], "smell_count": 0, "smell_density": 0.0}
 
-        # TsDetect writes output next to the input CSV by default
-        possible_output = Path(tmpdir) / "tsdetect_input_Output.csv"
-        if not possible_output.exists():
-            # fallback: look for any *Output.csv
-            candidates = list(Path(tmpdir).glob("*Output.csv"))
-            possible_output = candidates[0] if candidates else None
-
-        if not possible_output or not possible_output.exists():
+        if not output_csv.exists():
             print("  [TsDetect] Output CSV not found.")
             return {"smells_detected": [], "smell_count": 0, "smell_density": 0.0}
+
+        # Columns to skip when collecting smell flags
+        NON_SMELL_COLS = {
+            "App", "TestClass", "TestFilePath", "ProductionFilePath",
+            "RelativeTestFilePath", "RelativeProductionFilePath", "NumberOfMethods",
+        }
 
         smells_detected = []
         total_methods = 1  # conservative denominator when method count is unknown
 
-        with open(possible_output, encoding="utf-8") as f:
+        with open(output_csv, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 # Boolean smell columns (value == "true")
-                smells_detected += [k for k, v in row.items() if str(v).lower() == "true"
-                                     and k not in ("appName", "testFilePath", "productionFilePath",
-                                                    "relativeTestFilePath", "numberOfMethods")]
-                if "numberOfMethods" in row:
+                smells_detected += [k for k, v in row.items()
+                                     if str(v).lower() == "true" and k not in NON_SMELL_COLS]
+                if "NumberOfMethods" in row:
                     try:
-                        total_methods = max(1, int(row["numberOfMethods"]))
+                        total_methods = max(1, int(row["NumberOfMethods"]))
                     except ValueError:
                         pass
 
@@ -474,13 +499,17 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
         "evaluated_at": datetime.now().isoformat(timespec="seconds"),
     }
 
+    # --- Create Maven project (needed for compilability and dynamic metrics) ---
+    maven_project = create_maven_project(test_dir, metadata)
+
     # --- Gate: compilability ---
     print("[1/5] Compilability...")
-    comp = check_compilability(test_java, metadata)
+    comp = check_compilability(maven_project)
     result.update(comp)
 
     if not comp["compiles"]:
         print("  FAIL — test does not compile. Pipeline halted.")
+        shutil.rmtree(maven_project, ignore_errors=True)
         result["line_coverage"] = 0.0
         result["branch_coverage"] = 0.0
         result["mutation_score"] = 0.0
@@ -509,9 +538,8 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
     result.update(smells)
     print(f"  smell_count={smells['smell_count']}  smell_density={smells['smell_density']:.3f}")
 
-    # --- Dynamic: create Maven project ---
+    # --- Dynamic: coverage and mutation ---
     print("[4/5] Coverage (JaCoCo)...")
-    maven_project = create_maven_project(test_dir, metadata)
     try:
         coverage = check_coverage(maven_project)
         result.update(coverage)
