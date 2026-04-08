@@ -44,7 +44,8 @@ class PromptManager:
 
         # --- Header ---
         sections.append(
-            f"Generate {junit_version} unit tests with Mockito for the method below.\n"
+            f"Generate unit tests with Mockito for the method below.\n"
+            f"Use JUnit 4 (org.junit) or JUnit 5 (org.junit.jupiter.api) — whichever you know best.\n"
             f"The target class is `{class_info.class_name}` from package `{class_info.package}`.\n"
         )
 
@@ -107,7 +108,7 @@ class PromptManager:
         # --- Generation instructions ---
         sections.append("=== INSTRUCTIONS ===")
         instructions = [
-            f"- Use {junit_version} and Mockito",
+            "- Use JUnit 4 or JUnit 5 (your choice) with Mockito",
             "- Cover: happy path, null/empty values, and edge cases",
             "- Mock all external dependencies with @Mock / Mockito.mock()",
             "- Use only the methods and fields listed above; do not invent APIs",
