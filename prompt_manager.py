@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from java_parser import ClassInfo, FieldInfo, MethodInfo
+    from java_parser import ClassInfo, MethodInfo
 
 
 class PromptManager:
@@ -42,105 +43,132 @@ class PromptManager:
     ) -> str:
         sections = []
 
-        # --- Header ---
+        test_class_name = f"{class_info.class_name}Test"
+        pkg_display = class_info.package or "(default)"
+        cls = class_info.class_name
+
         sections.append(
-            f"Generate unit tests with Mockito for the method below.\n"
-            f"Use JUnit 4 (org.junit) or JUnit 5 (org.junit.jupiter.api) — whichever you know best.\n"
-            f"The target class is `{class_info.class_name}` from package `{class_info.package}`.\n"
+            f"Task: write a JUnit 4 + Mockito test class for `{cls}` "
+            f"(package `{pkg_display}`).\n"
+            "Output a SINGLE Java file with these exact parts, in order:\n"
+            f"  (1) the FILE HEADER block below, copied verbatim;\n"
+            f"  (2) one public class named `{test_class_name}` containing ONLY @Test methods.\n"
+            f"Do NOT redeclare `{cls}`, do NOT nest classes, do NOT repeat the package line.\n"
+            "All other sections below are REFERENCE ONLY — read them to understand the API, "
+            "but do not copy their contents into your output."
         )
 
-        # --- Relevant imports ---
-        relevant_imports = self._filter_relevant_imports(
-            class_info.imports, focal_method, class_info.fields
-        )
-        if relevant_imports:
-            sections.append("=== IMPORTS ===")
-            sections.append("\n".join(f"import {i};" for i in relevant_imports))
+        sections.append("----- FILE HEADER START (copy these lines verbatim) -----")
+        sections.append(self._build_required_imports(class_info, focal_method, dependent_classes))
+        sections.append("----- FILE HEADER END -----\n")
 
-        # --- Package and class declaration ---
-        sections.append("=== CLASS DECLARATION ===")
-        sections.append(f"package {class_info.package};\n")
-        sections.append(f"public class {class_info.class_name} {{")
-
-        # --- Fields ---
-        if class_info.fields:
-            sections.append("\n  // Fields")
-            for f in class_info.fields:
-                sections.append(f"  {f.raw}")
-
-        # --- Constructors ---
+        sections.append(f"----- REFERENCE: how to instantiate `{cls}` -----")
         if class_info.constructors:
-            sections.append("\n  // Constructors")
             for c in class_info.constructors:
-                sections.append(f"  {c.signature} {{")
-                for line in c.body.strip().split('\n')[:10]:
-                    sections.append(f"    {line}")
-                sections.append("  }")
+                sections.append(f"  new {c.name}({c.parameters});")
+        else:
+            sections.append(f"  new {cls}();  // implicit default constructor")
+        sections.append("")
 
-        sections.append("}\n")
-
-        # --- Focal method ---
-        sections.append("=== FOCAL METHOD (to be tested) ===")
-        sections.append(f"{focal_method.modifiers} {focal_method.return_type} "
-                        f"{focal_method.name}({focal_method.parameters}) {{")
+        sections.append(f"----- REFERENCE: focal method of `{cls}` (the method under test) -----")
+        sections.append(
+            f"{focal_method.modifiers} {focal_method.return_type} "
+            f"{focal_method.name}({focal_method.parameters}) {{"
+        )
         sections.append(focal_method.body)
         sections.append("}\n")
 
-        # --- Helper methods (signatures only) ---
         if called_methods:
-            sections.append("=== HELPER METHODS CALLED (signatures only) ===")
+            sections.append(f"----- REFERENCE: other methods of `{cls}` callable from the test -----")
             for m in called_methods:
-                sections.append(f"{m.signature};")
+                sections.append(f"  {m.return_type} {m.name}({m.parameters});")
             sections.append("")
 
-        # --- Dependent classes ---
         if dependent_classes:
-            sections.append("=== DEPENDENT CLASSES (fields and signatures) ===")
+            sections.append("----- REFERENCE: dependent types (method signatures only) -----")
             for dep in dependent_classes:
                 sections.append(f"// {dep.full_name}")
-                sections.append(f"public class {dep.class_name} {{")
-                for f in dep.fields:
-                    sections.append(f"  {f.raw}")
                 for m in dep.methods:
-                    sections.append(f"  {m.signature};")
-                sections.append("}\n")
+                    sections.append(f"  {m.return_type} {dep.class_name}.{m.name}({m.parameters});")
+            sections.append("")
 
-        # --- Generation instructions ---
-        sections.append("=== INSTRUCTIONS ===")
+        sections.append("----- INSTRUCTIONS -----")
         instructions = [
-            "- Use JUnit 4 or JUnit 5 (your choice) with Mockito",
-            "- Cover: happy path, null/empty values, and edge cases",
-            "- Mock all external dependencies with @Mock / Mockito.mock()",
-            "- Use only the methods and fields listed above; do not invent APIs",
-            "- Each test must have a descriptive name following the pattern: "
-            "  `given_<context>_when_<action>_then_<result>`",
-            "- Add a comment explaining the purpose of each test",
+            f"- Write ONE public class `{test_class_name}` (no nested classes, no extra package line).",
+            f"- Instantiate with `{cls} sut = new {cls}(...);` before calling instance methods.",
+            "- Use ONLY methods shown in the REFERENCE sections. Do not invent APIs.",
+            "- For any unknown parameter/dependency type, use `Mockito.mock(Type.class)`.",
+            "- Cover happy path, null/empty values, and one edge case.",
+            "- Each @Test method name must be unique.",
+            "- Test names follow `given_<context>_when_<action>_then_<result>`.",
         ]
         if extra_instructions:
             instructions.append(f"- {extra_instructions}")
 
         sections.append("\n".join(instructions))
-        sections.append("\nGenerate only the Java code, without any additional explanations.")
+        sections.append("\nOutput only the Java code for the test file. No explanations, no markdown.")
 
         return "\n".join(sections)
 
-    def _filter_relevant_imports(
+    def _build_required_imports(
         self,
-        imports: list[str],
+        class_info: ClassInfo,
         focal_method: MethodInfo,
-        fields: list[FieldInfo],
-    ) -> list[str]:
-        method_text = f"{focal_method.parameters} {focal_method.body}"
-        field_types = {f.type_name.split("<")[0] for f in fields}
+        dependent_classes: list[ClassInfo],
+    ) -> str:
+        """Builds a deterministic package + imports block for the test file.
 
-        relevant = []
-        for imp in imports:
-            simple = imp.split(".")[-1].replace("*", "")
-            if (simple in method_text or
-                    simple in field_types or
-                    simple == "*" or
-                    imp.startswith("java.util") or
-                    imp.startswith("java.io")):
-                relevant.append(imp)
+        The block is pre-assembled in Python so the model does not have to
+        remember which types require which imports. The test file is expected
+        to live in the SAME package as the class under test, giving it access
+        to package-private members.
+        """
+        lines: list[str] = []
 
-        return relevant[:20]
+        if class_info.package:
+            lines.append(f"package {class_info.package};")
+            lines.append("")
+
+        lines.extend([
+            "import org.junit.Test;",
+            "import org.junit.Before;",
+            "import static org.junit.Assert.*;",
+            "import org.mockito.Mock;",
+            "import org.mockito.Mockito;",
+            "import static org.mockito.Mockito.*;",
+        ])
+
+        seen_fqns: set[str] = set()
+
+        for dep in dependent_classes:
+            if not dep.full_name or dep.full_name == class_info.full_name:
+                continue
+            if dep.full_name in seen_fqns:
+                continue
+            if dep.package and dep.package == class_info.package:
+                continue
+            lines.append(f"import {dep.full_name};")
+            seen_fqns.add(dep.full_name)
+
+        method_text = f"{focal_method.parameters} {focal_method.body or ''}"
+        field_types = {f.type_name.split("<")[0] for f in class_info.fields}
+
+        remaining_budget = 25
+        for imp in class_info.imports:
+            if remaining_budget <= 0:
+                break
+            if imp in seen_fqns:
+                continue
+            if imp.endswith(".*"):
+                lines.append(f"import {imp};")
+                seen_fqns.add(imp)
+                remaining_budget -= 1
+                continue
+            simple = imp.rsplit(".", 1)[-1]
+            if (re.search(rf'\b{re.escape(simple)}\b', method_text)
+                    or simple in field_types):
+                lines.append(f"import {imp};")
+                seen_fqns.add(imp)
+                remaining_budget -= 1
+
+        return "\n".join(lines)
