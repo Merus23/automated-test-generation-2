@@ -54,6 +54,14 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.1.2</version>
+        <configuration>
+          <!-- @{argLine} preserves JaCoCo's injected agent argLine -->
+          <argLine>@{argLine} -Djava.awt.headless=true</argLine>
+          <forkedProcessTimeoutInSeconds>120</forkedProcessTimeoutInSeconds>
+          <systemPropertyVariables>
+            <java.awt.headless>true</java.awt.headless>
+          </systemPropertyVariables>
+        </configuration>
         <dependencies>
           <dependency>
             <groupId>org.junit.vintage</groupId>
@@ -130,6 +138,9 @@
           </mutableCodePaths>
           <outputFormats><outputFormat>XML</outputFormat></outputFormats>
           <timestampedReports>false</timestampedReports>
+          <jvmArgs>
+            <jvmArg>-Djava.awt.headless=true</jvmArg>
+          </jvmArgs>
         </configuration>
       </plugin>
 
