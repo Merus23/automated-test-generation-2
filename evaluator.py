@@ -170,11 +170,20 @@ def check_compilability(maven_project_path: str) -> dict:
     Returns:
         {"compiles": bool, "errors": list[str]}
     """
-    result = subprocess.run(
-        ["mvn", "-f", str(Path(maven_project_path) / "pom.xml"), "test-compile"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "mvn",
+                "-f", str(Path(maven_project_path) / "pom.xml"),
+                "-Djava.awt.headless=true",
+                "test-compile",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        return {"compiles": False, "errors": ["mvn test-compile timed out after 300s"]}
 
     if result.returncode != 0:
         # Maven sends compiler errors to stdout; stderr has stack traces
@@ -204,11 +213,22 @@ def check_coverage(maven_project_path: str) -> dict:
     Returns:
         {"line_coverage": float, "branch_coverage": float}
     """
-    result = subprocess.run(
-        ["mvn", "-f", str(Path(maven_project_path) / "pom.xml"), "test", "-q"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "mvn",
+                "-f", str(Path(maven_project_path) / "pom.xml"),
+                "-Djava.awt.headless=true",
+                "test",
+                "-q",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        print("  [JaCoCo] mvn test timed out after 300s (likely a hung test)")
+        return {"line_coverage": 0.0, "branch_coverage": 0.0}
 
     if result.returncode != 0:
         print(f"  [JaCoCo] mvn test failed:\n{result.stderr[-1000:]}")
@@ -390,14 +410,20 @@ def check_mutation_score(maven_project_path: str) -> dict:
     Returns:
         {"mutation_score": float, "killed": int, "total": int}
     """
-    result = subprocess.run(
-        [
-            "mvn", "-f", str(Path(maven_project_path) / "pom.xml"),
-            "org.pitest:pitest-maven:mutationCoverage", "-q",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "mvn", "-f", str(Path(maven_project_path) / "pom.xml"),
+                "-Djava.awt.headless=true",
+                "org.pitest:pitest-maven:mutationCoverage", "-q",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        print("  [PIT] mutationCoverage timed out after 600s")
+        return {"mutation_score": 0.0, "killed": 0, "total": 0}
 
     if result.returncode != 0:
         print(f"  [PIT] mutationCoverage failed:\n{result.stderr[-1000:]}")
