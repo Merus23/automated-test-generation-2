@@ -179,11 +179,36 @@ def run_sf110(base_path: str, class_name: str, method_name: str,
         print(prompt)
 
 
+_EVOSUITE_CLASS_SUFFIXES = ("EvoSuiteTest", "EvoSuiteScaffolding")
+
+# GUI Swing event-handler name patterns — these methods receive AWT/Swing event
+# objects that are hard to construct correctly and rarely make sense to unit-test.
+_GUI_EVENT_HANDLER_PATTERNS = (
+    "MouseClicked", "MousePressed", "MouseReleased", "MouseEntered", "MouseExited",
+    "KeyTyped", "KeyPressed", "KeyReleased",
+    "FocusLost", "FocusGained",
+    "ActionPerformed", "StateChanged", "ItemStateChanged",
+    "ComponentResized", "WindowClosing", "WindowOpened",
+)
+
+
+def _is_evosuite_class(class_name: str) -> bool:
+    return any(class_name.endswith(s) for s in _EVOSUITE_CLASS_SUFFIXES)
+
+
+def _is_gui_event_handler(method_name: str) -> bool:
+    return any(method_name.endswith(p) for p in _GUI_EVENT_HANDLER_PATTERNS)
+
+
 def batch_extract(base_path: str, output_dir: str, max_methods: int = 100,
                   prompt_type: str = "zero_shot"):
     """
     Extracts prompts in batch for all methods in the codebase.
     Useful for generating the complete experiment dataset.
+
+    Automatically skips:
+    - EvoSuite scaffold classes (*EvoSuiteTest, *EvoSuiteScaffolding)
+    - GUI Swing event-handler methods (e.g. btnExitMouseClicked, txtTitleFocusLost)
     """
     extractor = JavaContextExtractor(base_path, verbose=True)
     out = Path(output_dir)
@@ -191,11 +216,21 @@ def batch_extract(base_path: str, output_dir: str, max_methods: int = 100,
 
     results = []
     count = 0
+    skipped_evosuite = 0
+    skipped_gui = 0
 
     for full_name, class_info in extractor.index._class_map.items():
+        if _is_evosuite_class(class_info.class_name):
+            skipped_evosuite += 1
+            continue
+
         for method in class_info.methods:
             if count >= max_methods:
                 break
+
+            if _is_gui_event_handler(method.name):
+                skipped_gui += 1
+                continue
 
             prompt = extractor.build_prompt(
                 class_name=class_info.class_name,
@@ -228,6 +263,7 @@ def batch_extract(base_path: str, output_dir: str, max_methods: int = 100,
         json.dump(results, f, indent=2, ensure_ascii=False)
 
     print(f"\n[Batch] {count} prompts generated in '{output_dir}'")
+    print(f"[Batch] Skipped: {skipped_evosuite} EvoSuite classes, {skipped_gui} GUI event handlers")
     print(f"[Batch] Metadata: {meta_path}")
     return results
 
