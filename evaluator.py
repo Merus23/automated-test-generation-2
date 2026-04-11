@@ -449,44 +449,6 @@ def check_mutation_score(maven_project_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Fase 2.8 — Composite quality score
-# ---------------------------------------------------------------------------
-
-def quality_score(metrics: dict) -> float:
-    """Computes a weighted composite quality score from all collected metrics.
-
-    Returns 0.0 immediately if the test does not compile (gate metric).
-
-    Weights:
-        - mutation_score    30%  (strongest signal for bug detection)
-        - line_coverage     25%
-        - branch_coverage   20%
-        - smell density     15%  (inverted: fewer smells is better)
-        - avg_ccn           10%  (inverted: lower complexity is better)
-
-    Args:
-        metrics: Dict containing all metric values.
-
-    Returns:
-        Composite score in [0.0, 1.0].
-    """
-    if not metrics.get("compiles", False):
-        return 0.0
-
-    smell_density_norm = min(metrics.get("smell_density", 0.0), 1.0)
-    ccn_norm = min(metrics.get("avg_ccn", 0.0) / 10.0, 1.0)
-
-    score = (
-        0.30 * metrics.get("mutation_score", 0.0)
-        + 0.25 * metrics.get("line_coverage", 0.0)
-        + 0.20 * metrics.get("branch_coverage", 0.0)
-        + 0.15 * (1.0 - smell_density_norm)
-        + 0.10 * (1.0 - ccn_norm)
-    )
-    return round(score, 4)
-
-
-# ---------------------------------------------------------------------------
 # Fase 3.1 — Single-test orchestrator
 # ---------------------------------------------------------------------------
 
@@ -496,14 +458,14 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
     Pipeline:
         load_metadata → check_compilability (gate) → check_complexity
         → check_test_smells → create_maven_project → check_coverage
-        → check_mutation_score → quality_score → save results.json
+        → check_mutation_score → save results.json
 
     Args:
         test_dir: Directory containing test.java and metadata.json.
         keep_temp: If True, the temporary Maven project is not deleted.
 
     Returns:
-        Dict with all metric values and a "quality_score" key.
+        Dict with all metric values.
     """
     test_dir = str(Path(test_dir).resolve())
     test_java = str(Path(test_dir) / "test.java")
@@ -546,7 +508,6 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
         result["smell_count"] = 0
         result["smell_density"] = 0.0
         result["smells_detected"] = []
-        result["quality_score"] = 0.0
         _save_results(test_dir, result)
         return result
 
@@ -582,10 +543,6 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
         if not keep_temp:
             shutil.rmtree(maven_project, ignore_errors=True)
 
-    # --- Composite score ---
-    result["quality_score"] = quality_score(result)
-    print(f"\nQuality Score: {result['quality_score']:.4f}")
-
     _save_results(test_dir, result)
     return result
 
@@ -619,7 +576,6 @@ CSV_FIELDS = [
     "avg_nloc",
     "smell_count",
     "smell_density",
-    "quality_score",
 ]
 
 
@@ -658,7 +614,6 @@ def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv") -
             all_results.append({
                 "test_dir": td,
                 "error": str(exc),
-                "quality_score": 0.0,
             })
 
     # Write consolidated CSV

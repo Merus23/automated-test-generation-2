@@ -348,8 +348,7 @@ def main():
         manager = ModelManager()
         manager.run_batch(args.model, args.input_dir, args.output_dir, args.max)
     elif args.command == "evaluate":
-        result = evaluate_test(args.test_dir, keep_temp=args.keep_temp)
-        print(f"\nquality_score = {result['quality_score']}")
+        evaluate_test(args.test_dir, keep_temp=args.keep_temp)
     elif args.command == "evaluate-batch":
         evaluate_batch(args.tests_dir, args.output_csv)
     else:
