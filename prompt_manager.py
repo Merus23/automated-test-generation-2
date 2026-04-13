@@ -18,7 +18,7 @@ class PromptManager:
     def __init__(self):
         pass
 
-    PROMPT_TYPES = ("zero_shot", "few_shot")
+    PROMPT_TYPES = ("zero_shot", "few_shot", "chain_of_thought")
 
     def get_system_prompt(self) -> str:
         return self.SYSTEM_PROMPT
@@ -29,6 +29,8 @@ class PromptManager:
             return self.get_zero_shot_prompt(**kwargs)
         if prompt_type == "few_shot":
             return self.get_few_shot_prompt(**kwargs)
+        if prompt_type == "chain_of_thought":
+            return self.get_chain_of_thought_prompt(**kwargs)
         raise ValueError(
             f"Unknown prompt type '{prompt_type}'. "
             f"Available: {', '.join(self.PROMPT_TYPES)}"
@@ -291,6 +293,165 @@ public class OrderServiceTest {
         sections.append("\n".join(instructions))
 
         sections.append("\nOutput only the Java code for the test file. No explanations, no markdown.")
+
+        return "\n".join(sections)
+
+    def get_chain_of_thought_prompt(
+        self,
+        class_info: ClassInfo,
+        focal_method: MethodInfo,
+        called_methods: list[MethodInfo],
+        dependent_classes: list[ClassInfo],
+        junit_version: str,
+        extra_instructions: str,
+    ) -> str:
+        sections = []
+
+        test_class_name = f"{class_info.class_name}Test"
+        pkg_display = class_info.package or "(default)"
+        cls = class_info.class_name
+
+        # ------------------------------------------------------------------ #
+        # 1. Task description                                                  #
+        # ------------------------------------------------------------------ #
+        sections.append(
+            f"Task: write a JUnit 4 + Mockito test class for `{cls}` "
+            f"(package `{pkg_display}`).\n"
+            "You must reason step by step before writing any code.\n"
+            "Output a SINGLE Java file with these exact parts, in order:\n"
+            f"  (1) the FILE HEADER block below, copied verbatim;\n"
+            f"  (2) one public class named `{test_class_name}` containing ONLY @Test methods.\n"
+            f"Do NOT redeclare `{cls}`, do NOT nest classes, do NOT repeat the package line.\n"
+            "All REFERENCE sections are for reading only — do not copy them into your output."
+        )
+
+        # ------------------------------------------------------------------ #
+        # 2. FILE HEADER                                                       #
+        # ------------------------------------------------------------------ #
+        sections.append("----- FILE HEADER START (copy these lines verbatim) -----")
+        sections.append(self._build_required_imports(class_info, focal_method, dependent_classes))
+        sections.append("----- FILE HEADER END -----\n")
+
+        # ------------------------------------------------------------------ #
+        # 3. Reference sections                                                #
+        # ------------------------------------------------------------------ #
+        sections.append(f"----- REFERENCE: how to instantiate `{cls}` -----")
+        if class_info.constructors:
+            visible_ctors = [
+                c for c in class_info.constructors
+                if "private" not in (c.modifiers or "")
+            ]
+            if visible_ctors:
+                for c in visible_ctors:
+                    sections.append(f"  new {c.name}({c.parameters});")
+            else:
+                sections.append(
+                    f"  // all constructors are private — use Mockito.mock({cls}.class)"
+                )
+        else:
+            sections.append(f"  new {cls}();  // implicit default constructor")
+        sections.append("")
+
+        sections.append(f"----- REFERENCE: focal method of `{cls}` (the method under test) -----")
+        sections.append(
+            f"{focal_method.modifiers} {focal_method.return_type} "
+            f"{focal_method.name}({focal_method.parameters}) {{"
+        )
+        sections.append(focal_method.body)
+        sections.append("}\n")
+
+        if called_methods:
+            sections.append(
+                f"----- REFERENCE: other methods of `{cls}` callable from the test -----"
+            )
+            for m in called_methods:
+                sections.append(f"  {m.return_type} {m.name}({m.parameters});")
+            sections.append("")
+
+        if dependent_classes:
+            sections.append("----- REFERENCE: dependent types (method signatures only) -----")
+            for dep in dependent_classes:
+                sections.append(f"// {dep.full_name}")
+                for m in dep.methods[:8]:
+                    sections.append(
+                        f"  {m.return_type} {dep.class_name}.{m.name}({m.parameters});"
+                    )
+                if len(dep.methods) > 8:
+                    sections.append(f"  // {len(dep.methods) - 8} more method(s) omitted")
+            sections.append("")
+
+        # ------------------------------------------------------------------ #
+        # 4. Chain-of-Thought reasoning steps                                 #
+        #                                                                     #
+        # Structured in three tightly-scoped steps based on TestCTRL (TOSEM  #
+        # 2025): (1) method intention, (2) concrete test inputs per scenario, #
+        # (3) code generation. Steps are bounded to prevent over-generation   #
+        # observed by Bodicoat et al. (2025) with unbounded CoT.             #
+        # ------------------------------------------------------------------ #
+        sections.append("----- CHAIN-OF-THOUGHT: reason before you code -----")
+        sections.append(
+            "Before writing the test class, reason through the following three steps.\n"
+            "Write your reasoning as Java comments (// ...) immediately before the test class.\n"
+            "Keep each step concise — 2 to 4 lines maximum per step.\n"
+        )
+
+        sections.append(
+            "// STEP 1 — METHOD INTENTION\n"
+            "// Describe in one or two sentences what the focal method is supposed to do,\n"
+            f"// what it returns, and what invariants it must respect.\n"
+            "// Example:\n"
+            f"// The method `{focal_method.name}` [describe purpose].\n"
+            f"// It returns [{focal_method.return_type}] when [condition].\n"
+        )
+
+        sections.append(
+            "// STEP 2 — TEST SCENARIOS\n"
+            "// List the distinct scenarios to be tested, one per line.\n"
+            "// For each scenario, state: input values → expected output or behavior.\n"
+            "// Cover at minimum:\n"
+            "//   (a) happy path — typical valid inputs → expected result;\n"
+            "//   (b) boundary or null inputs → expected result or exception;\n"
+            "//   (c) one edge case derived from the method body logic.\n"
+            "// Example:\n"
+            "// Scenario A: input=[...] → returns [...]\n"
+            "// Scenario B: input=null  → returns null / throws [...]\n"
+            "// Scenario C: input=[...] → [edge case behavior]\n"
+        )
+
+        sections.append(
+            "// STEP 3 — COMPILATION CHECK\n"
+            "// Before finalizing, verify:\n"
+            f"//   (a) `{cls}` is instantiated with a visible constructor or Mockito.mock();\n"
+            "//   (b) every method call matches the exact signature in the REFERENCE sections;\n"
+            "//   (c) every @Test method contains at least one assertion;\n"
+            "//   (d) no class, package, or import is declared twice.\n"
+        )
+
+        sections.append("----- END OF CHAIN-OF-THOUGHT -----\n")
+
+        # ------------------------------------------------------------------ #
+        # 5. Instructions                                                      #
+        # ------------------------------------------------------------------ #
+        sections.append("----- INSTRUCTIONS -----")
+        instructions = [
+            "- Write the reasoning (Steps 1–3) as Java comments before the class declaration.",
+            f"- Then write ONE public class `{test_class_name}` (no nested classes, no extra package line).",
+            f"- Instantiate with `{cls} sut = new {cls}(...);` before calling instance methods.",
+            "- Use ONLY methods shown in the REFERENCE sections. Do not invent APIs.",
+            "- For any unknown parameter/dependency type, use `Mockito.mock(Type.class)`.",
+            "- Each @Test method must correspond to exactly one scenario from Step 2.",
+            "- Each @Test method must contain at least one assertion.",
+            "- Each @Test method name must be unique.",
+            "- Test names follow `given_<context>_when_<action>_then_<result>`.",
+        ]
+        if extra_instructions:
+            instructions.append(f"- {extra_instructions}")
+
+        sections.append("\n".join(instructions))
+        sections.append(
+            "\nOutput only the Java code for the test file "
+            "(reasoning as comments + test class). No explanations, no markdown."
+        )
 
         return "\n".join(sections)
 
