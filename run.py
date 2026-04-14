@@ -6,7 +6,7 @@ Subcommands:
     extract        — Extract a prompt for a specific method
     batch          — Extract prompts in batch for all methods in a codebase
     download       — Download a model from Hugging Face
-    generate       — Generate a test from a single prompt file using a local LLM
+    generate       — Generate a test from a single prompt file (local or remote)
     generate-batch — Generate tests in batch from a directory of prompt files
     evaluate       — Evaluate a single generated test
     evaluate-batch — Evaluate all generated tests in a directory
@@ -17,7 +17,9 @@ Usage:
     python run.py batch --base /path/to/sf110 --output-dir output --max 100
     python run.py download --model-id Qwen/Qwen3-0.5B
     python run.py generate --model Qwen_Qwen3-0.5B --prompt output/0007_DocumentSet_wordFrequency.txt
+    python run.py generate --model openai/gpt-4o --prompt output/0007_DocumentSet_wordFrequency.txt --backend remote
     python run.py generate-batch --model Qwen_Qwen3-0.5B --input-dir output --output-dir generated_tests
+    python run.py generate-batch --model openai/gpt-4o --input-dir output --output-dir generated_tests --backend remote
     python run.py evaluate --test-dir generated_tests/1_tullibee/Foo_calculateTotal_abc123/
     python run.py evaluate-batch --tests-dir generated_tests/ --output-csv evaluation_results.csv
 """
@@ -304,17 +306,21 @@ def main():
     dl.add_argument("--model-id", required=True, help="HF model ID (e.g. Qwen/Qwen3-0.5B)")
 
     # Subcommand: generate test from single prompt
-    gen = subparsers.add_parser("generate", help="Generate test from a single prompt file using a local LLM")
-    gen.add_argument("--model",  required=True, help="Local model name (directory in models/)")
-    gen.add_argument("--prompt", required=True, help="Prompt .txt file (e.g. output/0007_DocumentSet_wordFrequency.txt)")
-    gen.add_argument("--output", default=None,  help="Output file for generated code")
+    gen = subparsers.add_parser("generate", help="Generate test from a single prompt file (local or remote)")
+    gen.add_argument("--model",   required=True, help="Local model directory name or OpenRouter model ID (e.g. openai/gpt-4o)")
+    gen.add_argument("--prompt",  required=True, help="Prompt .txt file (e.g. output/0007_DocumentSet_wordFrequency.txt)")
+    gen.add_argument("--output",  default=None,  help="Output file for generated code")
+    gen.add_argument("--backend", default="local", choices=["local", "remote"],
+                     help="Execution backend: 'local' (default) or 'remote' (OpenRouter)")
 
     # Subcommand: generate tests in batch
     gen_batch = subparsers.add_parser("generate-batch", help="Generate tests in batch from prompt files")
-    gen_batch.add_argument("--model",      required=True, help="Local model name")
+    gen_batch.add_argument("--model",      required=True, help="Local model directory name or OpenRouter model ID")
     gen_batch.add_argument("--input-dir",  default="output", help="Directory with prompt .txt files (default: output)")
     gen_batch.add_argument("--output-dir", required=True, help="Output directory for generated tests")
     gen_batch.add_argument("--max",        type=int, default=100, help="Max files (default: 100)")
+    gen_batch.add_argument("--backend",    default="local", choices=["local", "remote"],
+                           help="Execution backend: 'local' (default) or 'remote' (OpenRouter)")
 
     # Subcommand: evaluate a single generated test
     ev = subparsers.add_parser("evaluate", help="Evaluate a single generated test")
@@ -340,13 +346,13 @@ def main():
         manager.download_model(args.model_id)
     elif args.command == "generate":
         manager = ModelManager()
-        code = manager.run_from_file(args.model, args.prompt, args.output)
+        code = manager.run_from_file(args.model, args.prompt, args.output, backend=args.backend)
         if not args.output:
             print("\n" + "=" * 60)
             print(code)
     elif args.command == "generate-batch":
         manager = ModelManager()
-        manager.run_batch(args.model, args.input_dir, args.output_dir, args.max)
+        manager.run_batch(args.model, args.input_dir, args.output_dir, args.max, backend=args.backend)
     elif args.command == "evaluate":
         evaluate_test(args.test_dir, keep_temp=args.keep_temp)
     elif args.command == "evaluate-batch":
