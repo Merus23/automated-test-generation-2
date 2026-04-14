@@ -7,3 +7,4 @@ models/*
 commands.txt
 generated_tests
 instructions/**
+remote_models_names.txt
