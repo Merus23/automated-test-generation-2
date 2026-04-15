@@ -142,17 +142,24 @@ def create_maven_project(test_dir: str, metadata: dict) -> str:
     # be placed under the directory tree that matches its package declaration.
     src_test = Path(test_dir) / "test.java"
     class_name = _extract_class_name(str(src_test))
+    test_content = src_test.read_text(encoding="utf-8")
     test_package = _extract_package(str(src_test))
+    sut_package = metadata["sut_package"]
+
+    # If the model dropped the package declaration, inject it from metadata.
+    if not test_package and sut_package:
+        test_content = f"package {sut_package};\n\n" + test_content
+        test_package = sut_package
+
     if test_package:
         pkg_dir = test_src_dir.joinpath(*test_package.split("."))
         pkg_dir.mkdir(parents=True, exist_ok=True)
         dst_test = pkg_dir / f"{class_name}.java"
     else:
         dst_test = test_src_dir / f"{class_name}.java"
-    shutil.copy2(src_test, dst_test)
+    dst_test.write_text(test_content, encoding="utf-8")
 
     # Render pom.xml from template
-    sut_package = metadata["sut_package"]
     # PIT targetClasses glob: "pkg.*" for named packages, "*" for the default package
     pit_target_classes = f"{sut_package}.*" if sut_package else "*"
     pom_template = POM_TEMPLATE_PATH.read_text(encoding="utf-8")
