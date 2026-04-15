@@ -62,17 +62,9 @@ class PromptManager:
             "but do not copy their contents into your output."
         )
 
-        sections.append("----- FILE HEADER START (copy these lines verbatim) -----")
-        sections.append(self._build_required_imports(class_info, focal_method, dependent_classes))
-        sections.append("----- FILE HEADER END -----\n")
+        sections.append(self._build_file_header_block(class_info, focal_method, dependent_classes))
 
-        sections.append(f"----- REFERENCE: how to instantiate `{cls}` -----")
-        if class_info.constructors:
-            for c in class_info.constructors:
-                sections.append(f"  new {c.name}({c.parameters});")
-        else:
-            sections.append(f"  new {cls}();  // implicit default constructor")
-        sections.append("")
+        sections.extend(self._build_instantiation_section(class_info))
 
         sections.append(f"----- REFERENCE: focal method of `{cls}` (the method under test) -----")
         sections.append(
@@ -97,15 +89,23 @@ class PromptManager:
             sections.append("")
 
         sections.append("----- INSTRUCTIONS -----")
+        sut_instantiation = (
+            f"`{cls} sut = Mockito.mock({cls}.class);`"
+            if class_info.is_abstract
+            else f"`{cls} sut = new {cls}(...);`"
+        )
         instructions = [
             f"- Write ONE public class `{test_class_name}` (no nested classes, no extra package line).",
-            f"- Instantiate with `{cls} sut = new {cls}(...);` before calling instance methods.",
+            f"- Instantiate with {sut_instantiation} before calling instance methods.",
             "- Use ONLY methods shown in the REFERENCE sections. Do not invent APIs.",
             "- For any unknown parameter/dependency type, use `Mockito.mock(Type.class)`.",
             "- Cover happy path, null/empty values, and one edge case.",
             "- Each @Test method name must be unique.",
             "- Test names follow `given_<context>_when_<action>_then_<result>`.",
         ]
+        abstract_instr = self._build_abstract_instruction(class_info)
+        if abstract_instr:
+            instructions.insert(1, abstract_instr)
         if extra_instructions:
             instructions.append(f"- {extra_instructions}")
 
@@ -242,18 +242,10 @@ public class OrderServiceTest {
         sections.append("----- END OF EXAMPLES -----\n")
 
         # 3. FILE HEADER (package + imports to copy verbatim)
-        sections.append("----- FILE HEADER START (copy these lines verbatim) -----")
-        sections.append(self._build_required_imports(class_info, focal_method, dependent_classes))
-        sections.append("----- FILE HEADER END -----\n")
+        sections.append(self._build_file_header_block(class_info, focal_method, dependent_classes))
 
         # 4. Reference sections (read-only context about the class under test)
-        sections.append(f"----- REFERENCE: how to instantiate `{cls}` -----")
-        if class_info.constructors:
-            for c in class_info.constructors:
-                sections.append(f"  new {c.name}({c.parameters});")
-        else:
-            sections.append(f"  new {cls}();  // implicit default constructor")
-        sections.append("")
+        sections.extend(self._build_instantiation_section(class_info))
 
         sections.append(f"----- REFERENCE: focal method of `{cls}` (the method under test) -----")
         sections.append(
@@ -279,15 +271,23 @@ public class OrderServiceTest {
 
         # 5. Instructions
         sections.append("----- INSTRUCTIONS -----")
+        sut_instantiation = (
+            f"`{cls} sut = Mockito.mock({cls}.class);`"
+            if class_info.is_abstract
+            else f"`{cls} sut = new {cls}(...);`"
+        )
         instructions = [
             f"- Write ONE public class `{test_class_name}` (no nested classes, no extra package line).",
-            f"- Instantiate with `{cls} sut = new {cls}(...);` before calling instance methods.",
+            f"- Instantiate with {sut_instantiation} before calling instance methods.",
             "- Use ONLY methods shown in the REFERENCE sections. Do not invent APIs.",
             "- For any unknown parameter/dependency type, use `Mockito.mock(Type.class)`.",
             "- Cover happy path, null/empty values, and one edge case.",
             "- Each @Test method name must be unique.",
             "- Test names follow `given_<context>_when_<action>_then_<result>`.",
         ]
+        abstract_instr = self._build_abstract_instruction(class_info)
+        if abstract_instr:
+            instructions.insert(1, abstract_instr)
         if extra_instructions:
             instructions.append(f"- {extra_instructions}")
         sections.append("\n".join(instructions))
@@ -328,29 +328,12 @@ public class OrderServiceTest {
         # ------------------------------------------------------------------ #
         # 2. FILE HEADER                                                       #
         # ------------------------------------------------------------------ #
-        sections.append("----- FILE HEADER START (copy these lines verbatim) -----")
-        sections.append(self._build_required_imports(class_info, focal_method, dependent_classes))
-        sections.append("----- FILE HEADER END -----\n")
+        sections.append(self._build_file_header_block(class_info, focal_method, dependent_classes))
 
         # ------------------------------------------------------------------ #
         # 3. Reference sections                                                #
         # ------------------------------------------------------------------ #
-        sections.append(f"----- REFERENCE: how to instantiate `{cls}` -----")
-        if class_info.constructors:
-            visible_ctors = [
-                c for c in class_info.constructors
-                if "private" not in (c.modifiers or "")
-            ]
-            if visible_ctors:
-                for c in visible_ctors:
-                    sections.append(f"  new {c.name}({c.parameters});")
-            else:
-                sections.append(
-                    f"  // all constructors are private — use Mockito.mock({cls}.class)"
-                )
-        else:
-            sections.append(f"  new {cls}();  // implicit default constructor")
-        sections.append("")
+        sections.extend(self._build_instantiation_section(class_info))
 
         sections.append(f"----- REFERENCE: focal method of `{cls}` (the method under test) -----")
         sections.append(
@@ -418,10 +401,15 @@ public class OrderServiceTest {
             "// Scenario C: input=[...] → [edge case behavior]\n"
         )
 
+        abstract_compile_note = (
+            f"//   (a) `{cls}` is ABSTRACT — use Mockito.mock({cls}.class), never `new {cls}()`;\n"
+            if class_info.is_abstract
+            else f"//   (a) `{cls}` is instantiated with a visible constructor or Mockito.mock();\n"
+        )
         sections.append(
             "// STEP 3 — COMPILATION CHECK\n"
             "// Before finalizing, verify:\n"
-            f"//   (a) `{cls}` is instantiated with a visible constructor or Mockito.mock();\n"
+            + abstract_compile_note +
             "//   (b) every method call matches the exact signature in the REFERENCE sections;\n"
             "//   (c) every @Test method contains at least one assertion;\n"
             "//   (d) no class, package, or import is declared twice.\n"
@@ -433,10 +421,15 @@ public class OrderServiceTest {
         # 5. Instructions                                                      #
         # ------------------------------------------------------------------ #
         sections.append("----- INSTRUCTIONS -----")
+        sut_instantiation = (
+            f"`{cls} sut = Mockito.mock({cls}.class);`"
+            if class_info.is_abstract
+            else f"`{cls} sut = new {cls}(...);`"
+        )
         instructions = [
             "- Write the reasoning (Steps 1–3) as Java comments before the class declaration.",
             f"- Then write ONE public class `{test_class_name}` (no nested classes, no extra package line).",
-            f"- Instantiate with `{cls} sut = new {cls}(...);` before calling instance methods.",
+            f"- Instantiate with {sut_instantiation} before calling instance methods.",
             "- Use ONLY methods shown in the REFERENCE sections. Do not invent APIs.",
             "- For any unknown parameter/dependency type, use `Mockito.mock(Type.class)`.",
             "- Each @Test method must correspond to exactly one scenario from Step 2.",
@@ -444,6 +437,9 @@ public class OrderServiceTest {
             "- Each @Test method name must be unique.",
             "- Test names follow `given_<context>_when_<action>_then_<result>`.",
         ]
+        abstract_instr = self._build_abstract_instruction(class_info)
+        if abstract_instr:
+            instructions.insert(2, abstract_instr)
         if extra_instructions:
             instructions.append(f"- {extra_instructions}")
 
@@ -454,6 +450,88 @@ public class OrderServiceTest {
         )
 
         return "\n".join(sections)
+
+    def _build_file_header_block(
+        self,
+        class_info: ClassInfo,
+        focal_method: MethodInfo,
+        dependent_classes: list[ClassInfo],
+    ) -> str:
+        """Wraps the required imports in a clearly-labelled FILE HEADER block.
+
+        The warning line is placed INSIDE the block so it appears as part of
+        the code the model must copy, making it harder to accidentally omit the
+        package declaration.
+        """
+        imports = self._build_required_imports(class_info, focal_method, dependent_classes)
+        warning = (
+            "// WARNING: copy this entire block verbatim as the first lines of your output.\n"
+            "// Omitting the package declaration WILL cause a compilation failure."
+        )
+        return (
+            "----- FILE HEADER START (copy these lines verbatim as-is) -----\n"
+            + warning + "\n"
+            + imports + "\n"
+            "----- FILE HEADER END -----\n"
+        )
+
+    def _build_class_declaration_line(self, class_info: ClassInfo) -> str:
+        """Returns the class declaration line (modifiers + name + extends + implements)."""
+        parts = []
+        if class_info.modifiers:
+            parts.append(class_info.modifiers)
+        parts.append(f"class {class_info.class_name}")
+        if class_info.extended_types:
+            parts.append(f"extends {', '.join(class_info.extended_types)}")
+        if class_info.implemented_types:
+            parts.append(f"implements {', '.join(class_info.implemented_types)}")
+        return " ".join(parts)
+
+    def _build_instantiation_section(self, class_info: ClassInfo) -> list[str]:
+        """
+        Builds the REFERENCE section describing how to create an instance of the class.
+        Handles abstract classes, private-only constructors, and normal classes.
+        """
+        cls = class_info.class_name
+        lines = [f"----- REFERENCE: how to instantiate `{cls}` -----"]
+
+        # Always show the class declaration so the model knows about abstract/extends/implements
+        lines.append(f"// Declaration: {self._build_class_declaration_line(class_info)}")
+
+        if class_info.is_abstract:
+            lines.append(
+                f"// `{cls}` is ABSTRACT — it cannot be instantiated with `new {cls}()`."
+            )
+            lines.append(
+                f"// Use: {cls} sut = Mockito.mock({cls}.class);"
+            )
+        elif class_info.constructors:
+            visible_ctors = [
+                c for c in class_info.constructors
+                if "private" not in (c.modifiers or "")
+            ]
+            if visible_ctors:
+                for c in visible_ctors:
+                    lines.append(f"  new {c.name}({c.parameters});")
+            else:
+                lines.append(
+                    f"  // all constructors are private — use Mockito.mock({cls}.class)"
+                )
+        else:
+            lines.append(f"  new {cls}();  // implicit default constructor")
+
+        lines.append("")
+        return lines
+
+    def _build_abstract_instruction(self, class_info: ClassInfo) -> str | None:
+        """Returns an extra instruction line when the class is abstract, or None."""
+        if not class_info.is_abstract:
+            return None
+        cls = class_info.class_name
+        return (
+            f"- `{cls}` is ABSTRACT. You MUST use `{cls} sut = Mockito.mock({cls}.class);` "
+            f"— NEVER call `new {cls}(...)`."
+        )
 
     def _build_required_imports(
         self,
@@ -495,6 +573,8 @@ public class OrderServiceTest {
             lines.append(f"import {dep.full_name};")
             seen_fqns.add(dep.full_name)
 
+        # Types referenced in method body/parameters, field types, and class hierarchy
+        hierarchy_types = set(class_info.extended_types) | set(class_info.implemented_types)
         method_text = f"{focal_method.parameters} {focal_method.body or ''}"
         field_types = {f.type_name.split("<")[0] for f in class_info.fields}
 
@@ -511,7 +591,8 @@ public class OrderServiceTest {
                 continue
             simple = imp.rsplit(".", 1)[-1]
             if (re.search(rf'\b{re.escape(simple)}\b', method_text)
-                    or simple in field_types):
+                    or simple in field_types
+                    or simple in hierarchy_types):
                 lines.append(f"import {imp};")
                 seen_fqns.add(imp)
                 remaining_budget -= 1
