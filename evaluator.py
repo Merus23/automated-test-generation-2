@@ -108,6 +108,13 @@ def _extract_class_name(test_java_path: str) -> str:
     return match.group(1) if match else "GeneratedTest"
 
 
+def _extract_package(test_java_path: str) -> str:
+    """Returns the package declared in test.java, or '' for the default package."""
+    content = Path(test_java_path).read_text(encoding="utf-8")
+    match = re.search(r'^\s*package\s+([\w.]+)\s*;', content, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
 # ---------------------------------------------------------------------------
 # Fase 2.2 — Temporary Maven project creator
 # ---------------------------------------------------------------------------
@@ -131,10 +138,17 @@ def create_maven_project(test_dir: str, metadata: dict) -> str:
     test_src_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy test.java into the Maven project using the declared class name as filename.
-    # javac requires that a public class Foo resides in Foo.java.
+    # javac requires that a public class Foo resides in Foo.java, and the file must
+    # be placed under the directory tree that matches its package declaration.
     src_test = Path(test_dir) / "test.java"
     class_name = _extract_class_name(str(src_test))
-    dst_test = test_src_dir / f"{class_name}.java"
+    test_package = _extract_package(str(src_test))
+    if test_package:
+        pkg_dir = test_src_dir.joinpath(*test_package.split("."))
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        dst_test = pkg_dir / f"{class_name}.java"
+    else:
+        dst_test = test_src_dir / f"{class_name}.java"
     shutil.copy2(src_test, dst_test)
 
     # Render pom.xml from template

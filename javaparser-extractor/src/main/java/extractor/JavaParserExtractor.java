@@ -86,6 +86,27 @@ public class JavaParserExtractor {
 
         result.put("className", classDecl.getNameAsString());
 
+        // Class modifiers (e.g. "public abstract", "public final")
+        String classModifiers = classDecl.getModifiers().stream()
+                .map(m -> m.getKeyword().asString())
+                .collect(Collectors.joining(" "));
+        result.put("classModifiers", classModifiers);
+
+        // Whether the class is declared abstract
+        result.put("isAbstract", classDecl.isAbstract());
+
+        // Superclass (extends)
+        List<String> extendedTypes = classDecl.getExtendedTypes().stream()
+                .map(t -> t.getNameAsString())
+                .collect(Collectors.toList());
+        result.put("extendedTypes", extendedTypes);
+
+        // Implemented interfaces
+        List<String> implementedTypes = classDecl.getImplementedTypes().stream()
+                .map(t -> t.getNameAsString())
+                .collect(Collectors.toList());
+        result.put("implementedTypes", implementedTypes);
+
         // Fields
         List<Map<String, String>> fields = new ArrayList<>();
         for (FieldDeclaration field : classDecl.getFields()) {

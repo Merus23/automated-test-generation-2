@@ -251,6 +251,7 @@ def batch_extract(base_path: str, output_dir: str, max_methods: int = 100,
                     "source_path": class_info.source_path,
                     "package": class_info.package,
                     "base_path": base_path,
+                    "prompt_type": prompt_type,
                 }
 
                 (out / entry["prompt_file"]).write_text(prompt, encoding='utf-8')

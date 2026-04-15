@@ -78,6 +78,10 @@ class ClassInfo:
     methods: list[MethodInfo]
     source_path: str
     raw_source: str
+    is_abstract: bool = False
+    modifiers: str = ""
+    extended_types: list[str] = field(default_factory=list)
+    implemented_types: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +192,10 @@ class ASTJavaParser:
             methods=methods,
             source_path=filepath,
             raw_source=raw_source,
+            is_abstract=data.get("isAbstract", False),
+            modifiers=data.get("classModifiers", ""),
+            extended_types=data.get("extendedTypes", []),
+            implemented_types=data.get("implementedTypes", []),
         )
 
     def extract_method_calls(self, method_body: str) -> set[str]:
