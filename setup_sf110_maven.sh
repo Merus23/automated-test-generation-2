@@ -15,9 +15,10 @@ log()  { echo "[INFO]  $*"; }
 warn() { echo "[WARN]  $*" >&2; }
 err()  { echo "[ERROR] $*" >&2; }
 
-# Collect unique project names from generated_tests/ (directories only)
+# Collect unique SF110 project names from generated_tests/{model}/{project}/
+# Structure: generated_tests/{pasta_do_test}/{sf110_project}/
 mapfile -t PROJECTS < <(
-  find "$GENERATED_TESTS_DIR" -maxdepth 1 -mindepth 1 -type d \
+  find "$GENERATED_TESTS_DIR" -maxdepth 2 -mindepth 2 -type d \
     -exec basename {} \; | sort -u
 )
 
