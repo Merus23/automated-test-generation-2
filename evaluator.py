@@ -39,6 +39,7 @@ BASE_DIR = Path(__file__).resolve().parent
 M2_REPO = Path.home() / ".m2" / "repository"
 TSDETECT_JAR = BASE_DIR / "TestSmellDetector" / "target" / "TestSmellDetector-0.1-jar-with-dependencies.jar"
 POM_TEMPLATE_PATH = BASE_DIR / "templates" / "pom_template.xml"
+SF110_DIR = Path(os.environ.get("SF110_DIR", Path.home() / "Documents/MasterDegree/files/localLLM/SF110"))
 
 # Fields that must be present AND non-empty
 REQUIRED_METADATA_FIELDS = [
@@ -113,6 +114,75 @@ def _extract_package(test_java_path: str) -> str:
     content = Path(test_java_path).read_text(encoding="utf-8")
     match = re.search(r'^\s*package\s+([\w.]+)\s*;', content, re.MULTILINE)
     return match.group(1) if match else ""
+
+
+# ---------------------------------------------------------------------------
+# SF110 JAR setup (lazy, on-demand)
+# ---------------------------------------------------------------------------
+
+def _ensure_sut_jar(sut_artifact_id: str) -> bool:
+    """Ensures the SUT JAR is installed in the local Maven repository.
+
+    Checks ~/.m2 first. If the JAR is absent, builds it with Ant and installs
+    it via mvn install:install-file. This mirrors setup_sf110_maven.sh but
+    runs only for the specific project that is about to be evaluated.
+
+    Args:
+        sut_artifact_id: The Maven artifactId, which matches the SF110 project
+                         directory name (e.g. '17_inspirento').
+
+    Returns:
+        True if the JAR is available in ~/.m2 after the call, False otherwise.
+    """
+    jar_path = M2_REPO / "sf110" / sut_artifact_id / "1.0" / f"{sut_artifact_id}-1.0.jar"
+    if jar_path.exists():
+        return True
+
+    print(f"  [Setup] JAR not in ~/.m2 for '{sut_artifact_id}'. Building...")
+    project_dir = SF110_DIR / sut_artifact_id
+
+    if not project_dir.exists():
+        print(f"  [Setup] SF110 directory not found: {project_dir}")
+        print(f"  [Setup] Set the SF110_DIR environment variable to the correct path.")
+        return False
+
+    ant = subprocess.run(
+        ["ant", "jar", "-q", "-Dcompile.source=8", "-Dcompile.target=8"],
+        cwd=str(project_dir),
+        capture_output=True,
+        text=True,
+    )
+    if ant.returncode != 0:
+        print(f"  [Setup] ant jar failed for '{sut_artifact_id}':\n{ant.stderr[-500:]}")
+        return False
+
+    jars = [
+        f for f in project_dir.glob("*.jar")
+        if not f.name.endswith(("-tests.jar", "-evosuite.jar"))
+    ]
+    if not jars:
+        print(f"  [Setup] No JAR found after build in {project_dir}")
+        return False
+
+    mvn = subprocess.run(
+        [
+            "mvn", "install:install-file",
+            f"-Dfile={jars[0]}",
+            "-DgroupId=sf110",
+            f"-DartifactId={sut_artifact_id}",
+            "-Dversion=1.0",
+            "-Dpackaging=jar",
+            "-q",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if mvn.returncode != 0:
+        print(f"  [Setup] mvn install:install-file failed for '{sut_artifact_id}':\n{mvn.stderr[-500:]}")
+        return False
+
+    print(f"  [Setup] JAR installed for '{sut_artifact_id}'")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +577,20 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
         "prompt_type": metadata["prompt_type"],
         "evaluated_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+    # --- Ensure SUT JAR is in ~/.m2 (build + install on demand if absent) ---
+    if not _ensure_sut_jar(metadata["sut_artifact_id"]):
+        print(f"  FAIL — SUT JAR unavailable for '{metadata['sut_artifact_id']}'. Pipeline halted.")
+        result.update({
+            "compiles": False,
+            "errors": [f"SUT JAR not found and could not be built for '{metadata['sut_artifact_id']}'"],
+            "line_coverage": 0.0, "branch_coverage": 0.0,
+            "mutation_score": 0.0, "killed": 0, "total_mutants": 0,
+            "avg_ccn": 0.0, "avg_nloc": 0.0,
+            "smell_count": 0, "smell_density": 0.0, "smells_detected": [],
+        })
+        _save_results(test_dir, result)
+        return result
 
     # --- Create Maven project (needed for compilability and dynamic metrics) ---
     maven_project = create_maven_project(test_dir, metadata)
