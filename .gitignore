@@ -2,7 +2,8 @@
 .env
 __pycache__/
 models/*
-/output/*  
+/output/*
+results/**  
 .claude
 commands.txt
 generated_tests
