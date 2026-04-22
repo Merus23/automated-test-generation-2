@@ -18,7 +18,7 @@ class PromptManager:
     def __init__(self):
         pass
 
-    PROMPT_TYPES = ("zero_shot", "few_shot", "chain_of_thought")
+    PROMPT_TYPES = ("zero_shot", "few_shot", "chain_of_thought", "anti_smell")
 
     def get_system_prompt(self) -> str:
         return self.SYSTEM_PROMPT
@@ -31,6 +31,8 @@ class PromptManager:
             return self.get_few_shot_prompt(**kwargs)
         if prompt_type == "chain_of_thought":
             return self.get_chain_of_thought_prompt(**kwargs)
+        if prompt_type == "anti_smell":
+            return self.get_anti_smell_prompt(**kwargs)
         raise ValueError(
             f"Unknown prompt type '{prompt_type}'. "
             f"Available: {', '.join(self.PROMPT_TYPES)}"
@@ -434,6 +436,165 @@ public class OrderServiceTest {
             "- For any unknown parameter/dependency type, use `Mockito.mock(Type.class)`.",
             "- Each @Test method must correspond to exactly one scenario from Step 2.",
             "- Each @Test method must contain at least one assertion.",
+            "- Each @Test method name must be unique.",
+            "- Test names follow `given_<context>_when_<action>_then_<result>`.",
+        ]
+        abstract_instr = self._build_abstract_instruction(class_info)
+        if abstract_instr:
+            instructions.insert(2, abstract_instr)
+        if extra_instructions:
+            instructions.append(f"- {extra_instructions}")
+
+        sections.append("\n".join(instructions))
+        sections.append(
+            "\nOutput only the Java code for the test file "
+            "(reasoning as comments + test class). No explanations, no markdown."
+        )
+
+        return "\n".join(sections)
+
+    def get_anti_smell_prompt(
+        self,
+        class_info: ClassInfo,
+        focal_method: MethodInfo,
+        called_methods: list[MethodInfo],
+        dependent_classes: list[ClassInfo],
+        junit_version: str,
+        extra_instructions: str,
+    ) -> str:
+        sections = []
+
+        test_class_name = f"{class_info.class_name}Test"
+        pkg_display = class_info.package or "(default)"
+        cls = class_info.class_name
+
+        sections.append(
+            f"Task: write a JUnit 4 + Mockito test class for `{cls}` "
+            f"(package `{pkg_display}`).\n"
+            "You must reason step by step before writing any code.\n"
+            "Output a SINGLE Java file with these exact parts, in order:\n"
+            f"  (1) the FILE HEADER block below, copied verbatim;\n"
+            f"  (2) one public class named `{test_class_name}` containing ONLY @Test methods.\n"
+            f"Do NOT redeclare `{cls}`, do NOT nest classes, do NOT repeat the package line.\n"
+            "All REFERENCE sections are for reading only — do not copy them into your output."
+        )
+
+        sections.append(self._build_file_header_block(class_info, focal_method, dependent_classes))
+
+        sections.extend(self._build_instantiation_section(class_info))
+
+        sections.append(f"----- REFERENCE: focal method of `{cls}` (the method under test) -----")
+        sections.append(
+            f"{focal_method.modifiers} {focal_method.return_type} "
+            f"{focal_method.name}({focal_method.parameters}) {{"
+        )
+        sections.append(focal_method.body)
+        sections.append("}\n")
+
+        if called_methods:
+            sections.append(
+                f"----- REFERENCE: other methods of `{cls}` callable from the test -----"
+            )
+            for m in called_methods:
+                sections.append(f"  {m.return_type} {m.name}({m.parameters});")
+            sections.append("")
+
+        if dependent_classes:
+            sections.append("----- REFERENCE: dependent types (method signatures only) -----")
+            for dep in dependent_classes:
+                sections.append(f"// {dep.full_name}")
+                for m in dep.methods[:8]:
+                    sections.append(
+                        f"  {m.return_type} {dep.class_name}.{m.name}({m.parameters});"
+                    )
+                if len(dep.methods) > 8:
+                    sections.append(f"  // {len(dep.methods) - 8} more method(s) omitted")
+            sections.append("")
+
+        sections.append("----- CHAIN-OF-THOUGHT: reason before you code -----")
+        sections.append(
+            "Before writing the test class, reason through the following four steps.\n"
+            "Write your reasoning as Java comments (// ...) immediately before the test class.\n"
+            "Keep each step concise — 2 to 4 lines maximum per step.\n"
+        )
+
+        sections.append(
+            "// STEP 1 — METHOD INTENTION\n"
+            "// Describe in one or two sentences what the focal method is supposed to do,\n"
+            f"// what it returns, and what invariants it must respect.\n"
+            "// Example:\n"
+            f"// The method `{focal_method.name}` [describe purpose].\n"
+            f"// It returns [{focal_method.return_type}] when [condition].\n"
+        )
+
+        sections.append(
+            "// STEP 2 — TEST SCENARIOS\n"
+            "// List the distinct scenarios to be tested, one per line.\n"
+            "// For each scenario, state: input values → expected output or behavior.\n"
+            "// Cover at minimum:\n"
+            "//   (a) happy path — typical valid inputs → expected result;\n"
+            "//   (b) boundary or null inputs → expected result or exception;\n"
+            "//   (c) one edge case derived from the method body logic.\n"
+            "// Example:\n"
+            "// Scenario A: input=[...] → returns [...]\n"
+            "// Scenario B: input=null  → returns null / throws [...]\n"
+            "// Scenario C: input=[...] → [edge case behavior]\n"
+        )
+
+        abstract_compile_note = (
+            f"//   (a) `{cls}` is ABSTRACT — use Mockito.mock({cls}.class), never `new {cls}()`;\n"
+            if class_info.is_abstract
+            else f"//   (a) `{cls}` is instantiated with a visible constructor or Mockito.mock();\n"
+        )
+        sections.append(
+            "// STEP 3 — COMPILATION CHECK\n"
+            "// Before finalizing, verify:\n"
+            + abstract_compile_note +
+            "//   (b) every method call matches the exact signature in the REFERENCE sections;\n"
+            "//   (c) every @Test method contains at least one assertion;\n"
+            "//   (d) no class, package, or import is declared twice.\n"
+        )
+
+        sections.append(
+            "// STEP 4 — TEST SMELL REVIEW\n"
+            "// Before writing any code, confirm that the tests you plan to write are free of the following smells:\n"
+            "//   Structure:\n"
+            "//     - Each @Test verifies exactly ONE method/behavior (no Eager Test).\n"
+            "//     - No if/for/while/switch inside @Test methods (no Conditional Test Logic).\n"
+            "//     - setUp() holds only fixtures shared by ALL tests (no General Fixture).\n"
+            "//   Assertions:\n"
+            "//     - Every @Test has at least one assertion (no Unknown Test / Empty Test).\n"
+            "//     - Every assertion in a multi-assert test has a descriptive message (no Assertion Roulette).\n"
+            "//     - No numeric/string literals in assertions; use named constants (no Magic Number Test).\n"
+            "//     - No trivially-true assertions such as assertEquals(true, true) (no Redundant Assertion).\n"
+            "//   Resources:\n"
+            "//     - All external resources (files, DBs) are created/initialized in setUp or inline (no Mystery Guest).\n"
+            "//     - No Thread.sleep() — use mocks or synchronization primitives (no Sleepy Test).\n"
+            "//   Quality:\n"
+            "//     - No System.out.println() or debug prints inside tests (no Redundant Print).\n"
+            "//     - Shared setup logic extracted to a helper method, not copy-pasted (no Test Code Duplication).\n"
+        )
+
+        sections.append("----- END OF CHAIN-OF-THOUGHT -----\n")
+
+        sections.append("----- INSTRUCTIONS -----")
+        sut_instantiation = (
+            f"`{cls} sut = Mockito.mock({cls}.class);`"
+            if class_info.is_abstract
+            else f"`{cls} sut = new {cls}(...);`"
+        )
+        instructions = [
+            "- Write the reasoning (Steps 1–4) as Java comments before the class declaration.",
+            f"- Then write ONE public class `{test_class_name}` (no nested classes, no extra package line).",
+            f"- Instantiate with {sut_instantiation} before calling instance methods.",
+            "- Use ONLY methods shown in the REFERENCE sections. Do not invent APIs.",
+            "- For any unknown parameter/dependency type, use `Mockito.mock(Type.class)`.",
+            "- Each @Test method must correspond to exactly one scenario from Step 2.",
+            "- Each @Test method must contain at least one assertion.",
+            "- When a test has more than one assertion, add a descriptive message to each.",
+            "- Replace all numeric/string literals in assertions with named constants.",
+            "- Do NOT use if/for/while/switch inside any @Test method.",
+            "- Do NOT use System.out.println() or any debug print inside tests.",
             "- Each @Test method name must be unique.",
             "- Test names follow `given_<context>_when_<action>_then_<result>`.",
         ]
