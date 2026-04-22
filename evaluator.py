@@ -206,6 +206,9 @@ def create_maven_project(test_dir: str, metadata: dict) -> str:
     project_dir = Path(tempfile.gettempdir()) / f"eval_{eval_id}"
     test_src_dir = project_dir / "src" / "test" / "java"
     test_src_dir.mkdir(parents=True, exist_ok=True)
+    # PIT skips projects that have no compile source root directory on disk,
+    # even when the production bytecode is already unpacked into target/classes.
+    (project_dir / "src" / "main" / "java").mkdir(parents=True, exist_ok=True)
 
     # Copy test.java into the Maven project using the declared class name as filename.
     # javac requires that a public class Foo resides in Foo.java, and the file must
@@ -230,8 +233,10 @@ def create_maven_project(test_dir: str, metadata: dict) -> str:
     dst_test.write_text(test_content, encoding="utf-8")
 
     # Render pom.xml from template
-    # PIT targetClasses glob: "pkg.*" for named packages, "*" for the default package
-    pit_target_classes = f"{sut_package}.*" if sut_package else "*"
+    # Use the exact focal class as PIT target to avoid broad glob matching issues,
+    # especially for default-package classes where "*" may produce no mutations.
+    focal_class = metadata["focal_class"]
+    pit_target_classes = f"{sut_package}.{focal_class}" if sut_package else focal_class
     pom_template = POM_TEMPLATE_PATH.read_text(encoding="utf-8")
     pom_content = (
         pom_template
@@ -291,15 +296,22 @@ def check_compilability(maven_project_path: str) -> dict:
 # Fase 2.4 — Coverage (JaCoCo)
 # ---------------------------------------------------------------------------
 
-def check_coverage(maven_project_path: str) -> dict:
-    """Runs the test suite and collects JaCoCo line/branch coverage.
+def check_coverage(maven_project_path: str, focal_class: str = "", focal_method: str = "") -> dict:
+    """Runs the test suite and collects JaCoCo line/branch coverage for the focal method.
 
     Expects the Maven project to have JaCoCo configured (provided by the
     pom_template.xml). Runs `mvn test` which triggers both the test execution
     and the JaCoCo report goal.
 
+    When focal_class and focal_method are provided, coverage is computed from
+    the method-level counters in jacoco.xml for that specific method (aggregating
+    overloads if any). Falls back to report-level counters if the method is not
+    found in the report.
+
     Args:
         maven_project_path: Path to the temporary Maven project.
+        focal_class: Simple class name of the focal method (e.g. "UIResources").
+        focal_method: Name of the focal method (e.g. "getString").
 
     Returns:
         {"line_coverage": float, "branch_coverage": float}
@@ -310,6 +322,9 @@ def check_coverage(maven_project_path: str) -> dict:
                 "mvn",
                 "-f", str(Path(maven_project_path) / "pom.xml"),
                 "-Djava.awt.headless=true",
+                # Ignore test failures so JaCoCo still generates the report even
+                # when tests throw exceptions at runtime (e.g. GUI tests, I/O failures).
+                "-Dmaven.test.failure.ignore=true",
                 "test",
                 "-q",
             ],
@@ -319,35 +334,100 @@ def check_coverage(maven_project_path: str) -> dict:
         )
     except subprocess.TimeoutExpired:
         print("  [JaCoCo] mvn test timed out after 300s (likely a hung test)")
-        return {"line_coverage": 0.0, "branch_coverage": 0.0}
+        return {"line_coverage": 0.0, "branch_coverage": 0.0, "has_branches": False, "coverage_evaluated": False}
 
     if result.returncode != 0:
-        print(f"  [JaCoCo] mvn test failed:\n{result.stderr[-1000:]}")
-        return {"line_coverage": 0.0, "branch_coverage": 0.0}
+        # Maven test failures go to stdout; stderr has build/plugin errors.
+        output = (result.stdout + result.stderr)[-1000:]
+        print(f"  [JaCoCo] mvn test failed (build error):\n{output}")
+        return {"line_coverage": 0.0, "branch_coverage": 0.0, "has_branches": False, "coverage_evaluated": False}
 
     jacoco_xml = Path(maven_project_path) / "target" / "site" / "jacoco" / "jacoco.xml"
     if not jacoco_xml.exists():
         print("  [JaCoCo] jacoco.xml not found after mvn test")
-        return {"line_coverage": 0.0, "branch_coverage": 0.0}
+        return {"line_coverage": 0.0, "branch_coverage": 0.0, "has_branches": False, "coverage_evaluated": False}
 
     tree = ET.parse(jacoco_xml)
     root = tree.getroot()
 
-    def _coverage(counter_type: str) -> float:
-        # Use report-level aggregate counters (direct children of <report>)
-        # instead of the first nested method-level counter.
+    if focal_class and focal_method:
+        line_cov, branch_cov, has_branches = _focal_method_coverage(root, focal_class, focal_method)
+        if line_cov is not None:
+            return {
+                "line_coverage": line_cov,
+                "branch_coverage": branch_cov,
+                "has_branches": has_branches,
+                "coverage_evaluated": True,
+            }
+        print(f"  [JaCoCo] Method '{focal_method}' not found in '{focal_class}'; falling back to report-level coverage.")
+
+    def _report_coverage(counter_type: str) -> tuple:
+        # Use report-level aggregate counters (direct children of <report>).
         for counter in root.findall("counter"):
             if counter.attrib.get("type") == counter_type:
                 missed = int(counter.attrib["missed"])
                 covered = int(counter.attrib["covered"])
                 total = missed + covered
-                return covered / total if total > 0 else 0.0
-        return 0.0
+                return covered / total if total > 0 else 0.0, total > 0
+        return 0.0, False
 
+    line_cov, _ = _report_coverage("LINE")
+    branch_cov, has_branches = _report_coverage("BRANCH")
     return {
-        "line_coverage": _coverage("LINE"),
-        "branch_coverage": _coverage("BRANCH"),
+        "line_coverage": line_cov,
+        "branch_coverage": branch_cov,
+        "has_branches": has_branches,
+        "coverage_evaluated": True,
     }
+
+
+def _focal_method_coverage(root: ET.Element, focal_class: str, focal_method: str) -> tuple:
+    """Extracts line and branch coverage for a specific method from a JaCoCo report.
+
+    JaCoCo XML structure: report > package > class > method > counter.
+    Class names in JaCoCo use slashes (e.g. "ui/UIResources"), so we match by
+    the trailing simple name. All overloads of focal_method are aggregated.
+
+    Returns:
+        (line_coverage, branch_coverage, has_branches) or (None, None, None) if not found.
+        has_branches is True when the method contains at least one conditional branch,
+        distinguishing genuine 0% branch coverage from methods with no branches at all.
+    """
+    line_missed = line_covered = 0
+    branch_missed = branch_covered = 0
+    found = False
+
+    for cls in root.iter("class"):
+        cls_name = cls.attrib.get("name", "")
+        # Match "UIResources" against "ui/UIResources" or "UIResources"
+        simple_name = cls_name.split("/")[-1]
+        if simple_name != focal_class:
+            continue
+        for method in cls.findall("method"):
+            if method.attrib.get("name") != focal_method:
+                continue
+            found = True
+            for counter in method.findall("counter"):
+                t = counter.attrib.get("type")
+                m = int(counter.attrib.get("missed", 0))
+                c = int(counter.attrib.get("covered", 0))
+                if t == "LINE":
+                    line_missed += m
+                    line_covered += c
+                elif t == "BRANCH":
+                    branch_missed += m
+                    branch_covered += c
+
+    if not found:
+        return None, None, None
+
+    line_total = line_missed + line_covered
+    branch_total = branch_missed + branch_covered
+    return (
+        line_covered / line_total if line_total > 0 else 0.0,
+        branch_covered / branch_total if branch_total > 0 else 0.0,
+        branch_total > 0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +597,8 @@ def check_mutation_score(maven_project_path: str) -> dict:
         return {"mutation_score": 0.0, "killed": 0, "total": 0}
 
     if result.returncode != 0:
-        print(f"  [PIT] mutationCoverage failed:\n{result.stderr[-1000:]}")
+        output = (result.stdout + result.stderr)[-1000:]
+        print(f"  [PIT] mutationCoverage failed:\n{output}")
         return {"mutation_score": 0.0, "killed": 0, "total": 0}
 
     mutations_xml = Path(maven_project_path) / "target" / "pit-reports" / "mutations.xml"
@@ -584,7 +665,7 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
         result.update({
             "compiles": False,
             "errors": [f"SUT JAR not found and could not be built for '{metadata['sut_artifact_id']}'"],
-            "line_coverage": 0.0, "branch_coverage": 0.0,
+            "line_coverage": 0.0, "branch_coverage": 0.0, "has_branches": False, "coverage_evaluated": False,
             "mutation_score": 0.0, "killed": 0, "total_mutants": 0,
             "avg_ccn": 0.0, "avg_nloc": 0.0,
             "smell_count": 0, "smell_density": 0.0, "smells_detected": [],
@@ -605,6 +686,8 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
         shutil.rmtree(maven_project, ignore_errors=True)
         result["line_coverage"] = 0.0
         result["branch_coverage"] = 0.0
+        result["has_branches"] = False
+        result["coverage_evaluated"] = False
         result["mutation_score"] = 0.0
         result["killed"] = 0
         result["total_mutants"] = 0
@@ -633,7 +716,7 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
     # --- Dynamic: coverage and mutation ---
     print("[4/5] Coverage (JaCoCo)...")
     try:
-        coverage = check_coverage(maven_project)
+        coverage = check_coverage(maven_project, metadata["focal_class"], metadata["focal_method"])
         result.update(coverage)
         print(f"  line={coverage['line_coverage']:.2%}  branch={coverage['branch_coverage']:.2%}")
 
@@ -676,6 +759,8 @@ CSV_FIELDS = [
     "compiles",
     "line_coverage",
     "branch_coverage",
+    "has_branches",
+    "coverage_evaluated",
     "mutation_score",
     "avg_ccn",
     "avg_nloc",

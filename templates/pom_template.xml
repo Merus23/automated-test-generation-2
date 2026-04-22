@@ -11,6 +11,9 @@
     <maven.compiler.source>11</maven.compiler.source>
     <maven.compiler.target>11</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Default empty value so PIT can resolve @{jacoco.argLine} when invoked
+         without a prior JaCoCo prepare-agent run in the same Maven session. -->
+    <jacoco.argLine></jacoco.argLine>
   </properties>
 
   <dependencies>
@@ -55,8 +58,9 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.1.2</version>
         <configuration>
-          <!-- @{argLine} preserves JaCoCo's injected agent argLine -->
-          <argLine>@{argLine} -Djava.awt.headless=true</argLine>
+          <!-- @{jacoco.argLine} picks up JaCoCo agent without polluting the global argLine
+               property, which PIT would otherwise inherit and pass literally to its minion JVM. -->
+          <argLine>@{jacoco.argLine} -Djava.awt.headless=true</argLine>
           <forkedProcessTimeoutInSeconds>120</forkedProcessTimeoutInSeconds>
           <systemPropertyVariables>
             <java.awt.headless>true</java.awt.headless>
@@ -80,6 +84,10 @@
           <execution>
             <id>prepare-agent</id>
             <goals><goal>prepare-agent</goal></goals>
+            <configuration>
+              <!-- Write to jacoco.argLine so PIT does not inherit it via the global argLine property -->
+              <propertyName>jacoco.argLine</propertyName>
+            </configuration>
           </execution>
           <execution>
             <id>report</id>
