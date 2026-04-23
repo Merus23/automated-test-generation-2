@@ -569,18 +569,24 @@ def check_test_smells(test_java_path: str, sut_class_path: str) -> dict:
 # Fase 2.7 — Mutation Score (PIT)
 # ---------------------------------------------------------------------------
 
-def check_mutation_score(maven_project_path: str) -> dict:
+def check_mutation_score(maven_project_path: str, focal_method: str = "") -> dict:
     """Runs PIT mutation testing and returns the mutation score.
 
     Assumes the Maven project has PIT configured (provided by pom_template.xml)
     and that `mvn test` has already passed (compilability gate).
 
+    When focal_method is provided, only mutations targeting that method are
+    counted, giving a method-level score instead of a class-level score.
+
     Args:
         maven_project_path: Path to the temporary Maven project.
+        focal_method: If non-empty, count only mutations in this method.
 
     Returns:
-        {"mutation_score": float, "killed": int, "total": int}
+        {"mutation_score": float, "killed": int, "total_mutants": int, "mutation_evaluated": bool}
     """
+    _default = {"mutation_score": 0.0, "killed": 0, "total_mutants": 0, "mutation_evaluated": False}
+
     try:
         result = subprocess.run(
             [
@@ -594,17 +600,20 @@ def check_mutation_score(maven_project_path: str) -> dict:
         )
     except subprocess.TimeoutExpired:
         print("  [PIT] mutationCoverage timed out after 600s")
-        return {"mutation_score": 0.0, "killed": 0, "total": 0}
+        return _default
 
     if result.returncode != 0:
-        output = (result.stdout + result.stderr)[-1000:]
-        print(f"  [PIT] mutationCoverage failed:\n{output}")
-        return {"mutation_score": 0.0, "killed": 0, "total": 0}
+        combined = result.stdout + result.stderr
+        if "Tests failing without mutation" in combined:
+            print("  SKIP — PIT aborted: tests fail in PIT's minion JVM (env/filesystem dependency).")
+        else:
+            print(f"  [PIT] mutationCoverage failed:\n{combined[-800:]}")
+        return _default
 
     mutations_xml = Path(maven_project_path) / "target" / "pit-reports" / "mutations.xml"
     if not mutations_xml.exists():
         print("  [PIT] mutations.xml not found")
-        return {"mutation_score": 0.0, "killed": 0, "total": 0}
+        return _default
 
     tree = ET.parse(mutations_xml)
     root = tree.getroot()
@@ -612,12 +621,18 @@ def check_mutation_score(maven_project_path: str) -> dict:
     total = 0
     killed = 0
     for mutation in root.findall("mutation"):
+        if focal_method and mutation.findtext("mutatedMethod", "") != focal_method:
+            continue
         total += 1
         if mutation.attrib.get("detected") == "true":
             killed += 1
 
-    mutation_score = killed / total if total > 0 else 0.0
-    return {"mutation_score": mutation_score, "killed": killed, "total": total}
+    if total == 0:
+        print("  SKIP — no mutations found for the focal method.")
+        return _default
+
+    mutation_score = killed / total
+    return {"mutation_score": mutation_score, "killed": killed, "total_mutants": total, "mutation_evaluated": True}
 
 
 # ---------------------------------------------------------------------------
@@ -666,7 +681,7 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
             "compiles": False,
             "errors": [f"SUT JAR not found and could not be built for '{metadata['sut_artifact_id']}'"],
             "line_coverage": 0.0, "branch_coverage": 0.0, "has_branches": False, "coverage_evaluated": False,
-            "mutation_score": 0.0, "killed": 0, "total_mutants": 0,
+            "mutation_score": 0.0, "killed": 0, "total_mutants": 0, "mutation_evaluated": False,
             "avg_ccn": 0.0, "avg_nloc": 0.0,
             "smell_count": 0, "smell_density": 0.0, "smells_detected": [],
         })
@@ -691,6 +706,7 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
         result["mutation_score"] = 0.0
         result["killed"] = 0
         result["total_mutants"] = 0
+        result["mutation_evaluated"] = False
         result["avg_ccn"] = 0.0
         result["avg_nloc"] = 0.0
         result["smell_count"] = 0
@@ -722,11 +738,19 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
 
         # --- Dynamic: mutation score (PIT) ---
         print("[5/5] Mutation Score (PIT)...")
-        mutation = check_mutation_score(maven_project)
-        result["mutation_score"] = mutation["mutation_score"]
-        result["killed"] = mutation["killed"]
-        result["total_mutants"] = mutation["total"]
-        print(f"  score={mutation['mutation_score']:.2%}  ({mutation['killed']}/{mutation['total']})")
+        if not coverage.get("coverage_evaluated") or coverage.get("line_coverage", 0.0) == 0.0:
+            print("  SKIP — line coverage is 0%; tests do not reach the SUT.")
+            result["mutation_score"] = 0.0
+            result["killed"] = 0
+            result["total_mutants"] = 0
+            result["mutation_evaluated"] = False
+        else:
+            mutation = check_mutation_score(maven_project, metadata["focal_method"])
+            result["mutation_score"] = mutation["mutation_score"]
+            result["killed"] = mutation["killed"]
+            result["total_mutants"] = mutation["total_mutants"]
+            result["mutation_evaluated"] = mutation["mutation_evaluated"]
+            print(f"  score={mutation['mutation_score']:.2%}  ({mutation['killed']}/{mutation['total_mutants']})")
     finally:
         if not keep_temp:
             shutil.rmtree(maven_project, ignore_errors=True)
@@ -762,6 +786,7 @@ CSV_FIELDS = [
     "has_branches",
     "coverage_evaluated",
     "mutation_score",
+    "mutation_evaluated",
     "avg_ccn",
     "avg_nloc",
     "smell_count",
