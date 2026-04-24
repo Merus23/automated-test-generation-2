@@ -59,6 +59,44 @@ python run.py batch --base /path/to/sf110 --output-dir output --max 100 --prompt
 | Type | Description |
 |------|-------------|
 | `zero_shot` | Structured prompt with class declaration, focal method, helper signatures, dependent classes, and generation instructions |
+| `few_shot` | Same structure as zero_shot with annotated examples of input/output pairs |
+| `chain_of_thought` | Prompts the model to reason step-by-step before generating the test |
+| `anti_smell` | Adds instructions to avoid common test smells in the generated tests |
+
+### Extract prompts in batch (balanced across SF110 projects)
+
+Generates all 4 prompt types at once for the same set of methods, distributed evenly across SF110 projects:
+
+```bash
+python run.py balanced-batch \
+    --sf110-base /path/to/SF110 \
+    --size 100 \
+    --output-dir output/balanced
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--sf110-base` | *(required)* | Root directory containing SF110 project subdirectories |
+| `--size` | `100` | Target number of methods to extract |
+| `--output-dir` | `output/balanced` | Root output directory |
+
+Output layout:
+
+```
+output/balanced/
+├── zero_shot/
+│   ├── 0000_ClassName_method.txt
+│   └── batch_metadata.json
+├── few_shot/
+│   ├── 0000_ClassName_method.txt   ← same method as zero_shot
+│   └── batch_metadata.json
+├── chain_of_thought/
+│   └── ...
+└── anti_smell/
+    └── ...
+```
+
+All four directories contain prompts for the **exact same** `(project, class, method)` tuples, enabling a fair comparison across prompt strategies.
 
 ### Download a model from Hugging Face
 
