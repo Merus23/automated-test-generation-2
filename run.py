@@ -26,6 +26,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -271,6 +272,110 @@ def batch_extract(base_path: str, output_dir: str, max_methods: int = 100,
     return results
 
 
+_PROMPT_TYPES = ["zero_shot", "few_shot", "chain_of_thought", "anti_smell"]
+
+
+def batch_extract_balanced(sf110_base: str, output_dir: str, size: int = 100):
+    """
+    Balanced extraction across SF110 projects.
+
+    Selects up to `size` (class, method) pairs distributed evenly across all
+    SF110 project subdirectories, then generates all 4 prompt types for each
+    selected pair. Every prompt type directory ends up with the same filenames,
+    guaranteeing identical (project, class, method) coverage.
+
+    Output layout:
+        <output_dir>/zero_shot/0000_ClassName_method.txt
+        <output_dir>/few_shot/0000_ClassName_method.txt
+        <output_dir>/chain_of_thought/0000_ClassName_method.txt
+        <output_dir>/anti_smell/0000_ClassName_method.txt
+        <output_dir>/<type>/batch_metadata.json  (one per type)
+    """
+    sf110_root = Path(sf110_base)
+    project_dirs = sorted([
+        d for d in sf110_root.iterdir()
+        if d.is_dir() and re.match(r'\d+_.+', d.name)
+    ])
+    N = len(project_dirs)
+    K = max(1, size // N)
+
+    print(f"[Balanced] {N} projects found — targeting {size} methods (~{K} per project)")
+
+    out = Path(output_dir)
+    type_dirs = {}
+    for pt in _PROMPT_TYPES:
+        d = out / pt
+        d.mkdir(parents=True, exist_ok=True)
+        type_dirs[pt] = d
+
+    all_results = {pt: [] for pt in _PROMPT_TYPES}
+    global_idx = 0
+    skipped_evosuite = 0
+    skipped_gui = 0
+
+    for project_dir in project_dirs:
+        if global_idx >= size:
+            break
+
+        print(f"[Balanced] [{global_idx}/{size}] Processing {project_dir.name} ...")
+        extractor = JavaContextExtractor(str(project_dir), verbose=False)
+        project_count = 0
+
+        for full_name, class_info in extractor.index._class_map.items():
+            if project_count >= K or global_idx >= size:
+                break
+            if _is_evosuite_class(class_info.class_name):
+                skipped_evosuite += 1
+                continue
+
+            for method in class_info.methods:
+                if project_count >= K or global_idx >= size:
+                    break
+                if _is_gui_event_handler(method.name):
+                    skipped_gui += 1
+                    continue
+
+                filename = f"{global_idx:04d}_{class_info.class_name}_{method.name}.txt"
+                print(f"  → {filename}")
+                any_generated = False
+
+                for pt in _PROMPT_TYPES:
+                    prompt = extractor.build_prompt(
+                        class_name=class_info.class_name,
+                        method_name=method.name,
+                        prompt_type=pt,
+                    )
+                    if prompt:
+                        (type_dirs[pt] / filename).write_text(prompt, encoding='utf-8')
+                        all_results[pt].append({
+                            "id": f"{full_name}#{method.name}",
+                            "class": full_name,
+                            "method": method.name,
+                            "signature": method.signature,
+                            "prompt_length": len(prompt),
+                            "prompt_file": filename,
+                            "source_path": class_info.source_path,
+                            "package": class_info.package,
+                            "base_path": str(sf110_root),
+                            "prompt_type": pt,
+                        })
+                        any_generated = True
+
+                if any_generated:
+                    global_idx += 1
+                    project_count += 1
+
+    for pt in _PROMPT_TYPES:
+        meta_path = type_dirs[pt] / "batch_metadata.json"
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump(all_results[pt], f, indent=2, ensure_ascii=False)
+        print(f"[Balanced] {len(all_results[pt])} prompts ({pt}) → '{type_dirs[pt]}'")
+
+    print(f"\n[Balanced] {global_idx} methods from {N} projects")
+    print(f"[Balanced] Skipped: {skipped_evosuite} EvoSuite classes, {skipped_gui} GUI event handlers")
+    return all_results
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -333,6 +438,15 @@ def main():
     ev_batch.add_argument("--tests-dir",   required=True, help="Root directory containing generated tests (e.g. generated_tests/)")
     ev_batch.add_argument("--output-csv",  default="evaluation_results.csv", help="Path for consolidated CSV report (default: evaluation_results.csv)")
 
+    # Subcommand: balanced batch extraction (all 4 prompt types, same methods)
+    bal = subparsers.add_parser(
+        "balanced-batch",
+        help="Balanced extraction: same methods across all 4 prompt types, distributed across SF110 projects",
+    )
+    bal.add_argument("--sf110-base",  required=True, help="Root of SF110 directory")
+    bal.add_argument("--output-dir",  default="output/balanced", help="Output directory (default: output/balanced)")
+    bal.add_argument("--size",        type=int, default=100, help="Target number of methods (default: 100)")
+
     args = parser.parse_args()
 
     if args.command == "example" or args.command is None:
@@ -358,6 +472,8 @@ def main():
         evaluate_test(args.test_dir, keep_temp=args.keep_temp)
     elif args.command == "evaluate-batch":
         evaluate_batch(args.tests_dir, args.output_csv)
+    elif args.command == "balanced-batch":
+        batch_extract_balanced(args.sf110_base, args.output_dir, args.size)
     else:
         parser.print_help()
 
