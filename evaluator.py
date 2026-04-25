@@ -23,8 +23,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import uuid
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from string import Template
@@ -35,6 +37,10 @@ BASE_DIR = Path(__file__).resolve().parent
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+# Guards concurrent builds of the same SUT JAR when evaluate_batch runs in parallel.
+_sut_jar_locks: dict[str, threading.Lock] = {}
+_sut_jar_locks_lock = threading.Lock()
 
 M2_REPO = Path.home() / ".m2" / "repository"
 TSDETECT_JAR = BASE_DIR / "TestSmellDetector" / "target" / "TestSmellDetector-0.1-jar-with-dependencies.jar"
@@ -127,6 +133,9 @@ def _ensure_sut_jar(sut_artifact_id: str) -> bool:
     it via mvn install:install-file. This mirrors setup_sf110_maven.sh but
     runs only for the specific project that is about to be evaluated.
 
+    Thread-safe: concurrent calls for the same artifact are serialised via a
+    per-artifact lock so the JAR is only built once even in parallel evaluation.
+
     Args:
         sut_artifact_id: The Maven artifactId, which matches the SF110 project
                          directory name (e.g. '17_inspirento').
@@ -137,6 +146,16 @@ def _ensure_sut_jar(sut_artifact_id: str) -> bool:
     jar_path = M2_REPO / "sf110" / sut_artifact_id / "1.0" / f"{sut_artifact_id}-1.0.jar"
     if jar_path.exists():
         return True
+
+    with _sut_jar_locks_lock:
+        if sut_artifact_id not in _sut_jar_locks:
+            _sut_jar_locks[sut_artifact_id] = threading.Lock()
+        artifact_lock = _sut_jar_locks[sut_artifact_id]
+
+    with artifact_lock:
+        # Re-check inside the lock — another thread may have built it already.
+        if jar_path.exists():
+            return True
 
     print(f"  [Setup] JAR not in ~/.m2 for '{sut_artifact_id}'. Building...")
     project_dir = SF110_DIR / sut_artifact_id
@@ -716,7 +735,7 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
         result.update({
             "compiles": False,
             "errors": [f"SUT JAR not found and could not be built for '{metadata['sut_artifact_id']}'"],
-            "compilation_failure_cause": "dependency",
+            "compilation_failure_cause": "sut_build_failure",
             "line_coverage": 0.0, "branch_coverage": 0.0, "has_branches": False, "coverage_evaluated": False,
             "mutation_score": 0.0, "killed": 0, "total_mutants": 0, "mutation_evaluated": False,
             "avg_ccn": 0.0, "avg_nloc": 0.0,
@@ -832,7 +851,8 @@ CSV_FIELDS = [
 ]
 
 
-def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv") -> list[dict]:
+def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
+                   concurrency: int = 4) -> list[dict]:
     """Evaluates all generated tests found under tests_dir.
 
     Discovers test directories by looking for folders that contain both
@@ -843,42 +863,51 @@ def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv") -
         tests_dir: Root directory containing generated tests
                    (e.g. generated_tests/).
         output_csv: Path for the consolidated CSV report.
+        concurrency: Number of parallel workers (default: 4). Each worker
+                     runs a full Maven evaluation pipeline, so keep this low
+                     enough to avoid I/O and CPU saturation.
 
     Returns:
         List of result dicts, one per evaluated test.
     """
     tests_root = Path(tests_dir)
-    test_dirs = [
+    test_dirs = sorted(
         d for d in tests_root.rglob("metadata.json")
         if (d.parent / "test.java").exists()
-    ]
+    )
 
-    print(f"Found {len(test_dirs)} test(s) in '{tests_dir}'")
+    total = len(test_dirs)
+    print(f"Found {total} test(s) in '{tests_dir}' — running with {concurrency} worker(s)")
+
+    print_lock = threading.Lock()
+    counter = {"n": 0}
+
+    def _run(meta_path: Path) -> dict:
+        td = str(meta_path.parent)
+        with print_lock:
+            counter["n"] += 1
+            print(f"\n[{counter['n']}/{total}] {td}")
+        try:
+            return evaluate_test(td)
+        except Exception as exc:
+            with print_lock:
+                print(f"  ERROR: {exc}")
+            return {"test_dir": td, "error": str(exc)}
 
     all_results = []
-    for i, meta_path in enumerate(test_dirs):
-        td = str(meta_path.parent)
-        print(f"\n[{i + 1}/{len(test_dirs)}] {td}")
-        try:
-            res = evaluate_test(td)
-            all_results.append(res)
-        except Exception as exc:
-            print(f"  ERROR: {exc}")
-            all_results.append({
-                "test_dir": td,
-                "error": str(exc),
-            })
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = {executor.submit(_run, p): p for p in test_dirs}
+        for future in as_completed(futures):
+            all_results.append(future.result())
 
-    # Write consolidated CSV
+    all_results.sort(key=lambda r: r.get("test_dir", ""))
+
     out_path = Path(output_csv)
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
         writer.writeheader()
         for i, res in enumerate(all_results):
-            row = {
-                "test_id": f"test_{i:04d}",
-                **res,
-            }
+            row = {"test_id": f"test_{i:04d}", **res}
             writer.writerow(row)
 
     print(f"\n[Batch] Report saved to {out_path}")
