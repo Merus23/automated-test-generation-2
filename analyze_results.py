@@ -17,10 +17,12 @@ def analyze_results(csv_path: str) -> None:
     print(f"Compiled: {compiled}/{total} ({compile_rate:.1f}%)")
 
     failed = df[df["compiles"] == False]
-    dep_failures = (failed["compilation_failure_cause"] == "dependency").sum()
-    syntax_failures = (failed["compilation_failure_cause"] == "syntax").sum()
-    other_failures = len(failed) - dep_failures - syntax_failures
+    sut_build_failures = (failed["compilation_failure_cause"] == "sut_build_failure").sum()
+    dep_failures       = (failed["compilation_failure_cause"] == "dependency").sum()
+    syntax_failures    = (failed["compilation_failure_cause"] == "syntax").sum()
+    other_failures     = len(failed) - sut_build_failures - dep_failures - syntax_failures
 
+    print(f"SUT build failures:  {sut_build_failures}/{total} ({sut_build_failures/total*100:.1f}%)")
     print(f"Dependency failures: {dep_failures}/{total} ({dep_failures/total*100:.1f}%)")
     print(f"Syntax failures:     {syntax_failures}/{total} ({syntax_failures/total*100:.1f}%)")
     if other_failures > 0:
