@@ -427,6 +427,8 @@ def main():
     gen_batch.add_argument("--max",        type=int, default=100, help="Max files (default: 100)")
     gen_batch.add_argument("--backend",    default="local", choices=["local", "remote"],
                            help="Execution backend: 'local' (default) or 'remote' (OpenRouter)")
+    gen_batch.add_argument("--concurrency", type=int, default=20,
+                           help="Parallel workers for remote backend (default: 20)")
 
     # Subcommand: evaluate a single generated test
     ev = subparsers.add_parser("evaluate", help="Evaluate a single generated test")
@@ -437,6 +439,7 @@ def main():
     ev_batch = subparsers.add_parser("evaluate-batch", help="Evaluate all generated tests in a directory")
     ev_batch.add_argument("--tests-dir",   required=True, help="Root directory containing generated tests (e.g. generated_tests/)")
     ev_batch.add_argument("--output-csv",  default="evaluation_results.csv", help="Path for consolidated CSV report (default: evaluation_results.csv)")
+    ev_batch.add_argument("--concurrency", type=int, default=4, help="Parallel evaluation workers (default: 4)")
 
     # Subcommand: balanced batch extraction (all 4 prompt types, same methods)
     bal = subparsers.add_parser(
@@ -467,11 +470,12 @@ def main():
             print(code)
     elif args.command == "generate-batch":
         manager = ModelManager()
-        manager.run_batch(args.model, args.input_dir, args.output_dir, args.max, backend=args.backend)
+        manager.run_batch(args.model, args.input_dir, args.output_dir, args.max,
+                          backend=args.backend, concurrency=args.concurrency)
     elif args.command == "evaluate":
         evaluate_test(args.test_dir, keep_temp=args.keep_temp)
     elif args.command == "evaluate-batch":
-        evaluate_batch(args.tests_dir, args.output_csv)
+        evaluate_batch(args.tests_dir, args.output_csv, concurrency=args.concurrency)
     elif args.command == "balanced-batch":
         batch_extract_balanced(args.sf110_base, args.output_dir, args.size)
     else:

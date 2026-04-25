@@ -217,7 +217,7 @@ class ModelManager:
         return code
 
     def run_batch(self, model_name: str, input_dir: str, output_dir: str, max_files: int = 100,
-                  backend: str = "local"):
+                  backend: str = "local", concurrency: int = 20):
         """Runs the model over all .txt prompt files in a directory.
 
         Each generated test is saved to:
@@ -233,15 +233,17 @@ class ModelManager:
             output_dir: Output directory for generated tests.
             max_files: Maximum number of files to process.
             backend: Execution backend — "local" (default) or "remote" (OpenRouter).
+            concurrency: Number of parallel workers for remote backend (default: 20).
         """
         import hashlib
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         from datetime import datetime
 
         in_path = Path(input_dir)
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
-        # Load batch metadata produced by batch_extract (may be absent for legacy runs)
         batch_meta_path = in_path / "batch_metadata.json"
         batch_meta_by_file: dict = {}
         if batch_meta_path.exists():
@@ -251,27 +253,22 @@ class ModelManager:
 
         prompt_files = sorted(in_path.glob("*.txt"))[:max_files]
         results = []
-        # Minimum pause between requests for remote backends to avoid rate limiting.
-        remote_request_delay = 3  # seconds
+        print_lock = threading.Lock()
 
-        for i, pf in enumerate(prompt_files):
-            if backend == "remote" and i > 0:
-                time.sleep(remote_request_delay)
-            print(f"\n[{i + 1}/{len(prompt_files)}] Processing {pf.name}...")
+        def process_file(idx: int, pf: Path) -> dict:
+            with print_lock:
+                print(f"\n[{idx + 1}/{len(prompt_files)}] Processing {pf.name}...")
             try:
                 code = self.run_from_file(model_name, str(pf), backend=backend)
 
-                # Build per-test directory
                 meta_entry = batch_meta_by_file.get(pf.name, {})
                 source_path = meta_entry.get("source_path", "")
                 base_path_str = meta_entry.get("base_path", "")
                 package = meta_entry.get("package", "")
                 focal_class = meta_entry.get("class", pf.stem.split("_")[1] if "_" in pf.stem else pf.stem)
-                # class field may be fully qualified; take simple name
                 focal_class_simple = focal_class.split(".")[-1] if focal_class else pf.stem
                 focal_method = meta_entry.get("method", "unknown")
 
-                # Derive sut_artifact_id from source_path relative to base_path
                 sut_artifact_id = "unknown"
                 if source_path and base_path_str:
                     try:
@@ -280,17 +277,14 @@ class ModelManager:
                     except ValueError:
                         sut_artifact_id = Path(source_path).parts[-4] if len(Path(source_path).parts) >= 4 else "unknown"
 
-                # Unique hash based on model + prompt file
                 uid = hashlib.md5(f"{model_name}:{pf.name}".encode()).hexdigest()[:8]
                 test_dir_name = f"{focal_class_simple}_{focal_method}_{uid}"
                 test_dir = out_path / sut_artifact_id / test_dir_name
                 test_dir.mkdir(parents=True, exist_ok=True)
 
-                # Save test.java
                 test_java_path = test_dir / "test.java"
                 test_java_path.write_text(code, encoding="utf-8")
 
-                # Save metadata.json
                 metadata = {
                     "sut_project":     sut_artifact_id,
                     "sut_class_path":  source_path,
@@ -306,17 +300,31 @@ class ModelManager:
                 with open(metadata_path, "w", encoding="utf-8") as f:
                     json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-                results.append({
+                with print_lock:
+                    print(f"  [{pf.name}] Saved to {test_dir}")
+                return {
                     "file": pf.name,
                     "output": str(test_java_path),
                     "test_dir": str(test_dir),
                     "status": "ok",
                     "length": len(code),
-                })
-                print(f"  Saved to {test_dir}")
+                }
             except Exception as e:
-                print(f"  ERROR: {e}")
-                results.append({"file": pf.name, "status": "error", "error": str(e)})
+                with print_lock:
+                    print(f"  [{pf.name}] ERROR: {e}")
+                return {"file": pf.name, "status": "error", "error": str(e)}
+
+        if backend == "remote":
+            workers = min(concurrency, len(prompt_files)) if prompt_files else 1
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(process_file, i, pf): pf for i, pf in enumerate(prompt_files)}
+                for future in as_completed(futures):
+                    results.append(future.result())
+        else:
+            for i, pf in enumerate(prompt_files):
+                results.append(process_file(i, pf))
+
+        results.sort(key=lambda r: r["file"])
 
         meta_path = out_path / "batch_results.json"
         with open(meta_path, "w", encoding="utf-8") as f:
