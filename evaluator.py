@@ -254,6 +254,37 @@ def create_maven_project(test_dir: str, metadata: dict) -> str:
 # Fase 2.3 — Compilability (gate metric)
 # ---------------------------------------------------------------------------
 
+_DEPENDENCY_PATTERNS = (
+    "Could not resolve dependencies",
+    "Artifact",
+    "not found",
+    "Could not transfer artifact",
+    "Cannot access",
+    "Non-resolvable",
+    "dependency resolution",
+)
+
+_SYNTAX_PATTERNS = (
+    "error:",
+    "';' expected",
+    "illegal start",
+    "reached end of file",
+    "cannot find symbol",
+    "incompatible types",
+    "unexpected token",
+)
+
+
+def _classify_compilation_failure(errors: list[str], stdout: str) -> str:
+    """Returns 'dependency', 'syntax', or 'unknown' for a failed compilation."""
+    combined = "\n".join(errors) + "\n" + stdout
+    if any(p in combined for p in _DEPENDENCY_PATTERNS):
+        return "dependency"
+    if any(p in combined for p in _SYNTAX_PATTERNS):
+        return "syntax"
+    return "unknown"
+
+
 def check_compilability(maven_project_path: str) -> dict:
     """Checks whether the generated test compiles via Maven (mvn test-compile).
 
@@ -264,7 +295,7 @@ def check_compilability(maven_project_path: str) -> dict:
         maven_project_path: Path to the temporary Maven project directory.
 
     Returns:
-        {"compiles": bool, "errors": list[str]}
+        {"compiles": bool, "errors": list[str], "compilation_failure_cause": str | None}
     """
     try:
         result = subprocess.run(
@@ -279,7 +310,11 @@ def check_compilability(maven_project_path: str) -> dict:
             timeout=300,
         )
     except subprocess.TimeoutExpired:
-        return {"compiles": False, "errors": ["mvn test-compile timed out after 300s"]}
+        return {
+            "compiles": False,
+            "errors": ["mvn test-compile timed out after 300s"],
+            "compilation_failure_cause": "timeout",
+        }
 
     if result.returncode != 0:
         # Maven sends compiler errors to stdout; stderr has stack traces
@@ -287,9 +322,10 @@ def check_compilability(maven_project_path: str) -> dict:
             line for line in result.stdout.splitlines()
             if "ERROR" in line or "error:" in line
         ]
-        return {"compiles": False, "errors": errors}
+        cause = _classify_compilation_failure(errors, result.stdout)
+        return {"compiles": False, "errors": errors, "compilation_failure_cause": cause}
 
-    return {"compiles": True, "errors": []}
+    return {"compiles": True, "errors": [], "compilation_failure_cause": None}
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +716,7 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
         result.update({
             "compiles": False,
             "errors": [f"SUT JAR not found and could not be built for '{metadata['sut_artifact_id']}'"],
+            "compilation_failure_cause": "dependency",
             "line_coverage": 0.0, "branch_coverage": 0.0, "has_branches": False, "coverage_evaluated": False,
             "mutation_score": 0.0, "killed": 0, "total_mutants": 0, "mutation_evaluated": False,
             "avg_ccn": 0.0, "avg_nloc": 0.0,
@@ -781,6 +818,7 @@ CSV_FIELDS = [
     "model",
     "prompt_type",
     "compiles",
+    "compilation_failure_cause",
     "line_coverage",
     "branch_coverage",
     "has_branches",
