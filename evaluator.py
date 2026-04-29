@@ -304,7 +304,7 @@ def _classify_compilation_failure(errors: list[str], stdout: str) -> str:
     return "unknown"
 
 
-def check_compilability(maven_project_path: str) -> dict:
+def check_compilability(maven_project_path: str, offline: bool = False) -> dict:
     """Checks whether the generated test compiles via Maven (mvn test-compile).
 
     Using Maven instead of raw javac ensures all test dependencies (JUnit,
@@ -317,17 +317,15 @@ def check_compilability(maven_project_path: str) -> dict:
         {"compiles": bool, "errors": list[str], "compilation_failure_cause": str | None}
     """
     try:
-        result = subprocess.run(
-            [
-                "mvn",
-                "-f", str(Path(maven_project_path) / "pom.xml"),
-                "-Djava.awt.headless=true",
-                "test-compile",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
+        cmd = [
+            "mvn",
+            "-f", str(Path(maven_project_path) / "pom.xml"),
+            "-Djava.awt.headless=true",
+            "test-compile",
+        ]
+        if offline:
+            cmd.insert(1, "-o")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     except subprocess.TimeoutExpired:
         return {
             "compiles": False,
@@ -351,7 +349,7 @@ def check_compilability(maven_project_path: str) -> dict:
 # Fase 2.4 — Coverage (JaCoCo)
 # ---------------------------------------------------------------------------
 
-def check_coverage(maven_project_path: str, focal_class: str = "", focal_method: str = "") -> dict:
+def check_coverage(maven_project_path: str, focal_class: str = "", focal_method: str = "", offline: bool = False) -> dict:
     """Runs the test suite and collects JaCoCo line/branch coverage for the focal method.
 
     Expects the Maven project to have JaCoCo configured (provided by the
@@ -372,21 +370,19 @@ def check_coverage(maven_project_path: str, focal_class: str = "", focal_method:
         {"line_coverage": float, "branch_coverage": float}
     """
     try:
-        result = subprocess.run(
-            [
-                "mvn",
-                "-f", str(Path(maven_project_path) / "pom.xml"),
-                "-Djava.awt.headless=true",
-                # Ignore test failures so JaCoCo still generates the report even
-                # when tests throw exceptions at runtime (e.g. GUI tests, I/O failures).
-                "-Dmaven.test.failure.ignore=true",
-                "test",
-                "-q",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
+        cmd = [
+            "mvn",
+            "-f", str(Path(maven_project_path) / "pom.xml"),
+            "-Djava.awt.headless=true",
+            # Ignore test failures so JaCoCo still generates the report even
+            # when tests throw exceptions at runtime (e.g. GUI tests, I/O failures).
+            "-Dmaven.test.failure.ignore=true",
+            "test",
+            "-q",
+        ]
+        if offline:
+            cmd.insert(1, "-o")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     except subprocess.TimeoutExpired:
         print("  [JaCoCo] mvn test timed out after 300s (likely a hung test)")
         return {"line_coverage": 0.0, "branch_coverage": 0.0, "has_branches": False, "coverage_evaluated": False}
@@ -624,7 +620,7 @@ def check_test_smells(test_java_path: str, sut_class_path: str) -> dict:
 # Fase 2.7 — Mutation Score (PIT)
 # ---------------------------------------------------------------------------
 
-def check_mutation_score(maven_project_path: str, focal_method: str = "") -> dict:
+def check_mutation_score(maven_project_path: str, focal_method: str = "", offline: bool = False) -> dict:
     """Runs PIT mutation testing and returns the mutation score.
 
     Assumes the Maven project has PIT configured (provided by pom_template.xml)
@@ -643,16 +639,14 @@ def check_mutation_score(maven_project_path: str, focal_method: str = "") -> dic
     _default = {"mutation_score": 0.0, "killed": 0, "total_mutants": 0, "mutation_evaluated": False}
 
     try:
-        result = subprocess.run(
-            [
-                "mvn", "-f", str(Path(maven_project_path) / "pom.xml"),
-                "-Djava.awt.headless=true",
-                "org.pitest:pitest-maven:mutationCoverage", "-q",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
+        cmd = [
+            "mvn", "-f", str(Path(maven_project_path) / "pom.xml"),
+            "-Djava.awt.headless=true",
+            "org.pitest:pitest-maven:mutationCoverage", "-q",
+        ]
+        if offline:
+            cmd.insert(1, "-o")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
         print("  [PIT] mutationCoverage timed out after 600s")
         return _default
@@ -694,7 +688,7 @@ def check_mutation_score(maven_project_path: str, focal_method: str = "") -> dic
 # Fase 3.1 — Single-test orchestrator
 # ---------------------------------------------------------------------------
 
-def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
+def evaluate_test(test_dir: str, keep_temp: bool = False, offline: bool = False) -> dict:
     """Runs the full evaluation pipeline for a single generated test.
 
     Pipeline:
@@ -749,7 +743,7 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
 
     # --- Gate: compilability ---
     print("[1/5] Compilability...")
-    comp = check_compilability(maven_project)
+    comp = check_compilability(maven_project, offline=offline)
     result.update(comp)
 
     if not comp["compiles"]:
@@ -788,7 +782,7 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
     # --- Dynamic: coverage and mutation ---
     print("[4/5] Coverage (JaCoCo)...")
     try:
-        coverage = check_coverage(maven_project, metadata["focal_class"], metadata["focal_method"])
+        coverage = check_coverage(maven_project, metadata["focal_class"], metadata["focal_method"], offline=offline)
         result.update(coverage)
         print(f"  line={coverage['line_coverage']:.2%}  branch={coverage['branch_coverage']:.2%}")
 
@@ -801,7 +795,7 @@ def evaluate_test(test_dir: str, keep_temp: bool = False) -> dict:
             result["total_mutants"] = 0
             result["mutation_evaluated"] = False
         else:
-            mutation = check_mutation_score(maven_project, metadata["focal_method"])
+            mutation = check_mutation_score(maven_project, metadata["focal_method"], offline=offline)
             result["mutation_score"] = mutation["mutation_score"]
             result["killed"] = mutation["killed"]
             result["total_mutants"] = mutation["total_mutants"]
@@ -851,13 +845,29 @@ CSV_FIELDS = [
 ]
 
 
+def _sut_jar_available(sut_artifact_id: str) -> bool:
+    jar_path = M2_REPO / "sf110" / sut_artifact_id / "1.0" / f"{sut_artifact_id}-1.0.jar"
+    return jar_path.exists()
+
+
+def _cleanup_surefire_dirs() -> None:
+    """Removes Maven Surefire residual directories from /tmp for the current user."""
+    tmp = Path(tempfile.gettempdir())
+    current_user = os.environ.get("USER", "")
+    for surefire_dir in tmp.glob(f"surefire{current_user}*"):
+        shutil.rmtree(surefire_dir, ignore_errors=True)
+
+
 def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
-                   concurrency: int = 4) -> list[dict]:
+                   concurrency: int = 4, chunk_size: int = 500,
+                   offline: bool = False,
+                   skip_missing_sut: bool = False,
+                   resume: bool = False) -> list[dict]:
     """Evaluates all generated tests found under tests_dir.
 
     Discovers test directories by looking for folders that contain both
     test.java and metadata.json. Results are saved per-test as results.json
-    and consolidated into a CSV report.
+    and consolidated into a CSV report written incrementally after each chunk.
 
     Args:
         tests_dir: Root directory containing generated tests
@@ -866,6 +876,15 @@ def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
         concurrency: Number of parallel workers (default: 4). Each worker
                      runs a full Maven evaluation pipeline, so keep this low
                      enough to avoid I/O and CPU saturation.
+        chunk_size: Number of tests evaluated before flushing results to CSV
+                    and cleaning up Surefire temp directories (default: 500).
+                    Prevents disk exhaustion on large batches and ensures
+                    partial results survive a crash.
+        skip_missing_sut: If True, silently skip tests whose SUT JAR is not
+                          already present in ~/.m2 (no build attempt is made).
+        resume: If True, skip tests that already have a results.json (i.e.
+                were successfully evaluated in a previous run). The existing
+                results are loaded and included in the final CSV report.
 
     Returns:
         List of result dicts, one per evaluated test.
@@ -876,39 +895,93 @@ def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
         if (d.parent / "test.java").exists()
     )
 
+    already_done: list[dict] = []
+    if resume:
+        pending = []
+        for meta_path in test_dirs:
+            results_file = meta_path.parent / "results.json"
+            if results_file.exists():
+                try:
+                    with open(results_file, encoding="utf-8") as f:
+                        already_done.append(json.load(f))
+                except Exception:
+                    pending.append(meta_path)
+            else:
+                pending.append(meta_path)
+        skipped = len(test_dirs) - len(pending)
+        if skipped:
+            print(f"[Batch] --resume: skipping {skipped} already-evaluated test(s)")
+        test_dirs = pending
+
+    if skip_missing_sut:
+        before = len(test_dirs)
+        def _has_sut(meta_path: Path) -> bool:
+            try:
+                with open(meta_path, encoding="utf-8") as f:
+                    artifact_id = json.load(f)["sut_artifact_id"]
+                return _sut_jar_available(artifact_id)
+            except Exception:
+                return False
+        test_dirs = [d for d in test_dirs if _has_sut(d)]
+        skipped = before - len(test_dirs)
+        if skipped:
+            print(f"[Batch] Skipped {skipped} test(s) — SUT JAR not in ~/.m2")
+
     total = len(test_dirs)
-    print(f"Found {total} test(s) in '{tests_dir}' — running with {concurrency} worker(s)")
-
-    print_lock = threading.Lock()
-    counter = {"n": 0}
-
-    def _run(meta_path: Path) -> dict:
-        td = str(meta_path.parent)
-        with print_lock:
-            counter["n"] += 1
-            print(f"\n[{counter['n']}/{total}] {td}")
-        try:
-            return evaluate_test(td)
-        except Exception as exc:
-            with print_lock:
-                print(f"  ERROR: {exc}")
-            return {"test_dir": td, "error": str(exc)}
-
-    all_results = []
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = {executor.submit(_run, p): p for p in test_dirs}
-        for future in as_completed(futures):
-            all_results.append(future.result())
-
-    all_results.sort(key=lambda r: r.get("test_dir", ""))
+    chunks = [test_dirs[i:i + chunk_size] for i in range(0, total, chunk_size)]
+    print(
+        f"Found {total} test(s) in '{tests_dir}' — "
+        f"{len(chunks)} chunk(s) of up to {chunk_size}, {concurrency} worker(s)"
+    )
 
     out_path = Path(output_csv)
+    print_lock = threading.Lock()
+    global_counter = {"n": 0}
+    global_test_id = {"n": 0}
+    all_results = list(already_done)
+
+    # Write header once before processing any chunk.
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
         writer.writeheader()
-        for i, res in enumerate(all_results):
-            row = {"test_id": f"test_{i:04d}", **res}
+        for res in already_done:
+            row = {"test_id": f"test_{global_test_id['n']:04d}", **res}
             writer.writerow(row)
+            global_test_id["n"] += 1
+
+    for chunk_idx, chunk in enumerate(chunks):
+        print(f"\n[Batch] Chunk {chunk_idx + 1}/{len(chunks)} — {len(chunk)} test(s)")
+
+        def _run(meta_path: Path) -> dict:
+            td = str(meta_path.parent)
+            with print_lock:
+                global_counter["n"] += 1
+                print(f"\n[{global_counter['n']}/{total}] {td}")
+            try:
+                return evaluate_test(td, offline=offline)
+            except Exception as exc:
+                with print_lock:
+                    print(f"  ERROR: {exc}")
+                return {"test_dir": td, "error": str(exc)}
+
+        chunk_results = []
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {executor.submit(_run, p): p for p in chunk}
+            for future in as_completed(futures):
+                chunk_results.append(future.result())
+
+        chunk_results.sort(key=lambda r: r.get("test_dir", ""))
+
+        with open(out_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+            for res in chunk_results:
+                row = {"test_id": f"test_{global_test_id['n']:04d}", **res}
+                writer.writerow(row)
+                global_test_id["n"] += 1
+
+        all_results.extend(chunk_results)
+        print(f"[Batch] Chunk {chunk_idx + 1} flushed to {out_path} — cleaning Surefire dirs")
+        _cleanup_surefire_dirs()
 
     print(f"\n[Batch] Report saved to {out_path}")
     return all_results

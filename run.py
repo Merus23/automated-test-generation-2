@@ -440,6 +440,10 @@ def main():
     ev_batch.add_argument("--tests-dir",   required=True, help="Root directory containing generated tests (e.g. generated_tests/)")
     ev_batch.add_argument("--output-csv",  default="evaluation_results.csv", help="Path for consolidated CSV report (default: evaluation_results.csv)")
     ev_batch.add_argument("--concurrency", type=int, default=4, help="Parallel evaluation workers (default: 4)")
+    ev_batch.add_argument("--chunk-size", type=int, default=500, help="Tests per chunk before flushing CSV and cleaning /tmp (default: 500)")
+    ev_batch.add_argument("--maven-offline", action="store_true", help="Pass -o to Maven (skip network checks; requires deps already cached)")
+    ev_batch.add_argument("--skip-missing-sut", action="store_true", help="Skip tests whose SUT JAR is not already in ~/.m2 (no build attempt)")
+    ev_batch.add_argument("--resume", action="store_true", help="Skip tests that already have results.json; include their results in the final CSV")
 
     # Subcommand: balanced batch extraction (all 4 prompt types, same methods)
     bal = subparsers.add_parser(
@@ -475,7 +479,9 @@ def main():
     elif args.command == "evaluate":
         evaluate_test(args.test_dir, keep_temp=args.keep_temp)
     elif args.command == "evaluate-batch":
-        evaluate_batch(args.tests_dir, args.output_csv, concurrency=args.concurrency)
+        evaluate_batch(args.tests_dir, args.output_csv, concurrency=args.concurrency,
+                       chunk_size=args.chunk_size, offline=args.maven_offline,
+                       skip_missing_sut=args.skip_missing_sut, resume=args.resume)
     elif args.command == "balanced-batch":
         batch_extract_balanced(args.sf110_base, args.output_dir, args.size)
     else:
