@@ -28,6 +28,10 @@ def analyze_results(csv_path: str) -> None:
     if other_failures > 0:
         print(f"Other failures:      {other_failures}/{total} ({other_failures/total*100:.1f}%)")
 
+    eligible = total - sut_build_failures
+    eligible_rate = compiled / eligible * 100 if eligible > 0 else 0.0
+    print(f"Compiled (excl. SUT failures): {compiled}/{eligible} ({eligible_rate:.1f}%)")
+
     # Coverage metrics
     print(f"\n--- Coverage ---")
     cov_evaluated = df[df["coverage_evaluated"] == True]
