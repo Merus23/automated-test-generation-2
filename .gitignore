@@ -8,4 +8,5 @@ results/**
 commands.txt
 generated_tests
 instructions/**
+experiments/**
 remote_models_names.md
