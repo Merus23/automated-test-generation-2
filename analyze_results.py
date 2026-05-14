@@ -1,3 +1,4 @@
+import ast
 import pandas as pd
 import sys
 from pathlib import Path
@@ -79,6 +80,12 @@ def analyze_results(csv_path: str) -> None:
         if col in compiled_df.columns and len(compiled_df) > 0:
             series = compiled_df[col]
             print(f"{label}: avg={series.mean():.3f}, min={series.min():.3f}, max={series.max():.3f}")
+
+    if "smell_count" in compiled_df.columns and len(compiled_df) > 0:
+        no_smell = (compiled_df["smell_count"] == 0).sum()
+        print(f"Tests without smells: {no_smell}/{len(compiled_df)} ({no_smell/len(compiled_df)*100:.1f}%)")
+        percentiles = compiled_df["smell_count"].quantile([0.25, 0.50, 0.75, 0.90, 0.95])
+        print(f"Smell Count percentiles: p25={percentiles[0.25]:.1f}, p50={percentiles[0.50]:.1f}, p75={percentiles[0.75]:.1f}, p90={percentiles[0.90]:.1f}, p95={percentiles[0.95]:.1f}")
 
 
 if __name__ == "__main__":
