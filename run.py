@@ -427,6 +427,8 @@ def main():
     gen_batch.add_argument("--max",        type=int, default=100, help="Max files (default: 100)")
     gen_batch.add_argument("--backend",    default="local", choices=["local", "remote"],
                            help="Execution backend: 'local' (default) or 'remote' (OpenRouter)")
+    gen_batch.add_argument("--skip-missing-sut", action="store_true",
+                           help="Skip prompts whose SUT JAR is not already in ~/.m2")
     gen_batch.add_argument("--concurrency", type=int, default=20,
                            help="Parallel workers for remote backend (default: 20)")
 
@@ -475,7 +477,8 @@ def main():
     elif args.command == "generate-batch":
         manager = ModelManager()
         manager.run_batch(args.model, args.input_dir, args.output_dir, args.max,
-                          backend=args.backend, concurrency=args.concurrency)
+                          backend=args.backend, concurrency=args.concurrency,
+                          skip_missing_sut=args.skip_missing_sut)
     elif args.command == "evaluate":
         evaluate_test(args.test_dir, keep_temp=args.keep_temp)
     elif args.command == "evaluate-batch":

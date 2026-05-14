@@ -217,7 +217,7 @@ class ModelManager:
         return code
 
     def run_batch(self, model_name: str, input_dir: str, output_dir: str, max_files: int = 100,
-                  backend: str = "local", concurrency: int = 20):
+                  backend: str = "local", concurrency: int = 20, skip_missing_sut: bool = False):
         """Runs the model over all .txt prompt files in a directory.
 
         Each generated test is saved to:
@@ -234,11 +234,14 @@ class ModelManager:
             max_files: Maximum number of files to process.
             backend: Execution backend — "local" (default) or "remote" (OpenRouter).
             concurrency: Number of parallel workers for remote backend (default: 20).
+            skip_missing_sut: If True, skip prompts whose SUT JAR is not in ~/.m2.
         """
         import hashlib
         import threading
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from datetime import datetime
+
+        m2_repo = Path.home() / ".m2" / "repository"
 
         in_path = Path(input_dir)
         out_path = Path(output_dir)
@@ -251,31 +254,50 @@ class ModelManager:
                 for entry in json.load(f):
                     batch_meta_by_file[entry["prompt_file"]] = entry
 
-        prompt_files = sorted(in_path.glob("*.txt"))[:max_files]
+        def _resolve_artifact_id(meta_entry: dict) -> str:
+            source_path = meta_entry.get("source_path", "")
+            base_path_str = meta_entry.get("base_path", "")
+            if source_path and base_path_str:
+                try:
+                    return Path(source_path).relative_to(base_path_str).parts[0]
+                except (ValueError, IndexError):
+                    parts = Path(source_path).parts
+                    return parts[-4] if len(parts) >= 4 else "unknown"
+            return "unknown"
+
+        all_files = sorted(in_path.glob("*.txt"))[:max_files]
+
+        if skip_missing_sut:
+            prompt_files = []
+            skipped_upfront = []
+            for pf in all_files:
+                artifact_id = _resolve_artifact_id(batch_meta_by_file.get(pf.name, {}))
+                jar = m2_repo / "sf110" / artifact_id / "1.0" / f"{artifact_id}-1.0.jar"
+                if artifact_id == "unknown" or jar.exists():
+                    prompt_files.append(pf)
+                else:
+                    skipped_upfront.append(pf.name)
+            print(f"[Batch] --skip-missing-sut: {len(skipped_upfront)} prompts skipped (JAR not in ~/.m2), {len(prompt_files)} will be processed")
+        else:
+            prompt_files = all_files
+
         results = []
         print_lock = threading.Lock()
 
         def process_file(idx: int, pf: Path) -> dict:
+            meta_entry = batch_meta_by_file.get(pf.name, {})
+            sut_artifact_id = _resolve_artifact_id(meta_entry)
+
             with print_lock:
                 print(f"\n[{idx + 1}/{len(prompt_files)}] Processing {pf.name}...")
             try:
                 code = self.run_from_file(model_name, str(pf), backend=backend)
 
-                meta_entry = batch_meta_by_file.get(pf.name, {})
                 source_path = meta_entry.get("source_path", "")
-                base_path_str = meta_entry.get("base_path", "")
                 package = meta_entry.get("package", "")
                 focal_class = meta_entry.get("class", pf.stem.split("_")[1] if "_" in pf.stem else pf.stem)
                 focal_class_simple = focal_class.split(".")[-1] if focal_class else pf.stem
                 focal_method = meta_entry.get("method", "unknown")
-
-                sut_artifact_id = "unknown"
-                if source_path and base_path_str:
-                    try:
-                        rel = Path(source_path).relative_to(base_path_str)
-                        sut_artifact_id = rel.parts[0]
-                    except ValueError:
-                        sut_artifact_id = Path(source_path).parts[-4] if len(Path(source_path).parts) >= 4 else "unknown"
 
                 uid = hashlib.md5(f"{model_name}:{pf.name}".encode()).hexdigest()[:8]
                 test_dir_name = f"{focal_class_simple}_{focal_method}_{uid}"
