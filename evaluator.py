@@ -14,6 +14,11 @@ Usage:
     from evaluator import evaluate_test, evaluate_batch
     result = evaluate_test("generated_tests/1_tullibee/Foo_calcTotal_abc123/")
     evaluate_batch("generated_tests/", "evaluation_results.csv")
+
+Environment variables:
+    SF110_DIR              — Path to SF110 corpus root.
+    EVAL_PIT_CONCURRENCY   — Max parallel PIT runs (default: 1).
+                             Lower = less RAM; higher = faster but heavier.
 """
 
 import csv
@@ -21,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -42,10 +48,71 @@ BASE_DIR = Path(__file__).resolve().parent
 _sut_jar_locks: dict[str, threading.Lock] = {}
 _sut_jar_locks_lock = threading.Lock()
 
+TEMP_DIR = BASE_DIR / "temp"
+TEMP_DIR.mkdir(exist_ok=True)
+
 M2_REPO = Path.home() / ".m2" / "repository"
 TSDETECT_JAR = BASE_DIR / "TestSmellDetector" / "target" / "TestSmellDetector-0.1-jar-with-dependencies.jar"
 POM_TEMPLATE_PATH = BASE_DIR / "templates" / "pom_template.xml"
 SF110_DIR = Path(os.environ.get("SF110_DIR", Path.home() / "Documents/MasterDegree/files/localLLM/SF110"))
+
+# Limits Maven JVM heap for compile/test runs (dependency resolution + Surefire delegation).
+_MAVEN_ENV = os.environ | {"MAVEN_OPTS": "-Xmx256m"}
+
+# PIT's Maven plugin runs bytecode analysis in-process (before spawning the minion JVM),
+# so it needs more heap than the plain orchestrator. Keep separate to avoid bloating
+# the lighter compile/test/install runs.
+_PIT_MAVEN_ENV = os.environ | {"MAVEN_OPTS": "-Xmx512m"}
+
+# Limits simultaneous PIT runs. PIT is the heaviest phase (minion JVM + metaspace).
+# Default=1 serialises PIT across all workers; raise via env var if RAM allows.
+_PIT_SEMAPHORE = threading.Semaphore(
+    int(os.environ.get("EVAL_PIT_CONCURRENCY", "1"))
+)
+
+
+def _run_maven(cmd: list[str], timeout: int, offline: bool = False,
+               discard_output: bool = False,
+               env: dict | None = None) -> subprocess.CompletedProcess:
+    """Runs a Maven command and kills the entire process group on timeout or completion.
+
+    Using start_new_session=True places Maven and all its child JVMs (Surefire,
+    PIT minions) in their own process group. This ensures that os.killpg kills
+    every child when the timeout fires — preventing orphaned JVMs that accumulate
+    memory across many evaluations.
+
+    discard_output=True redirects stdout/stderr to /dev/null. Use this for steps
+    where the test suite itself may produce unbounded output (e.g. infinite loops
+    printing to stdout), which would otherwise buffer entirely in Python's heap via
+    communicate() and cause OOM.
+    """
+    if offline:
+        cmd = [cmd[0], "-o"] + cmd[1:]
+    sink = subprocess.DEVNULL if discard_output else subprocess.PIPE
+    proc = subprocess.Popen(
+        cmd,
+        stdout=sink,
+        stderr=sink,
+        env=env if env is not None else _MAVEN_ENV,
+        start_new_session=True,
+    )
+    try:
+        if discard_output:
+            proc.wait(timeout=timeout)
+            return subprocess.CompletedProcess(cmd, proc.returncode, "", "")
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace"))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if not discard_output:
+            proc.communicate()
+        else:
+            proc.wait()
+        raise
+
 
 # Fields that must be present AND non-empty
 REQUIRED_METADATA_FIELDS = [
@@ -165,12 +232,17 @@ def _ensure_sut_jar(sut_artifact_id: str) -> bool:
         print(f"  [Setup] Set the SF110_DIR environment variable to the correct path.")
         return False
 
-    ant = subprocess.run(
-        ["ant", "jar", "-q", "-Dcompile.source=8", "-Dcompile.target=8"],
-        cwd=str(project_dir),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        ant = subprocess.run(
+            ["ant", "jar", "-q", "-Dcompile.source=8", "-Dcompile.target=8"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  [Setup] ant jar timed out after 300s for '{sut_artifact_id}'")
+        return False
     if ant.returncode != 0:
         print(f"  [Setup] ant jar failed for '{sut_artifact_id}':\n{ant.stderr[-500:]}")
         return False
@@ -183,19 +255,22 @@ def _ensure_sut_jar(sut_artifact_id: str) -> bool:
         print(f"  [Setup] No JAR found after build in {project_dir}")
         return False
 
-    mvn = subprocess.run(
-        [
-            "mvn", "install:install-file",
-            f"-Dfile={jars[0]}",
-            "-DgroupId=sf110",
-            f"-DartifactId={sut_artifact_id}",
-            "-Dversion=1.0",
-            "-Dpackaging=jar",
-            "-q",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        mvn = _run_maven(
+            [
+                "mvn", "install:install-file",
+                f"-Dfile={jars[0]}",
+                "-DgroupId=sf110",
+                f"-DartifactId={sut_artifact_id}",
+                "-Dversion=1.0",
+                "-Dpackaging=jar",
+                "-q",
+            ],
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  [Setup] mvn install:install-file timed out after 120s for '{sut_artifact_id}'")
+        return False
     if mvn.returncode != 0:
         print(f"  [Setup] mvn install:install-file failed for '{sut_artifact_id}':\n{mvn.stderr[-500:]}")
         return False
@@ -222,7 +297,7 @@ def create_maven_project(test_dir: str, metadata: dict) -> str:
         Path to the created temporary project directory.
     """
     eval_id = uuid.uuid4().hex[:8]
-    project_dir = Path(tempfile.gettempdir()) / f"eval_{eval_id}"
+    project_dir = TEMP_DIR / f"eval_{eval_id}"
     test_src_dir = project_dir / "src" / "test" / "java"
     test_src_dir.mkdir(parents=True, exist_ok=True)
     # PIT skips projects that have no compile source root directory on disk,
@@ -317,15 +392,16 @@ def check_compilability(maven_project_path: str, offline: bool = False) -> dict:
         {"compiles": bool, "errors": list[str], "compilation_failure_cause": str | None}
     """
     try:
-        cmd = [
-            "mvn",
-            "-f", str(Path(maven_project_path) / "pom.xml"),
-            "-Djava.awt.headless=true",
-            "test-compile",
-        ]
-        if offline:
-            cmd.insert(1, "-o")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = _run_maven(
+            [
+                "mvn",
+                "-f", str(Path(maven_project_path) / "pom.xml"),
+                "-Djava.awt.headless=true",
+                "test-compile",
+            ],
+            timeout=300,
+            offline=offline,
+        )
     except subprocess.TimeoutExpired:
         return {
             "compiles": False,
@@ -370,21 +446,23 @@ def check_coverage(maven_project_path: str, focal_class: str = "", focal_method:
         {"line_coverage": float, "branch_coverage": float}
     """
     try:
-        cmd = [
-            "mvn",
-            "-f", str(Path(maven_project_path) / "pom.xml"),
-            "-Djava.awt.headless=true",
-            # Ignore test failures so JaCoCo still generates the report even
-            # when tests throw exceptions at runtime (e.g. GUI tests, I/O failures).
-            "-Dmaven.test.failure.ignore=true",
-            "test",
-            "-q",
-        ]
-        if offline:
-            cmd.insert(1, "-o")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = _run_maven(
+            [
+                "mvn",
+                "-f", str(Path(maven_project_path) / "pom.xml"),
+                "-Djava.awt.headless=true",
+                # Ignore test failures so JaCoCo still generates the report even
+                # when tests throw exceptions at runtime (e.g. GUI tests, I/O failures).
+                "-Dmaven.test.failure.ignore=true",
+                "test",
+                "-q",
+            ],
+            timeout=85,
+            offline=offline,
+            discard_output=True,
+        )
     except subprocess.TimeoutExpired:
-        print("  [JaCoCo] mvn test timed out after 300s (likely a hung test)")
+        print("  [JaCoCo] mvn test timed out after 85s (Surefire fork limit=60s + Maven overhead)")
         return {"line_coverage": 0.0, "branch_coverage": 0.0, "has_branches": False, "coverage_evaluated": False}
 
     if result.returncode != 0:
@@ -494,8 +572,7 @@ def check_complexity(test_java_path: str) -> dict:
     Returns:
         {"avg_ccn": float, "avg_nloc": float, "methods": list[dict]}
     """
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
-        csv_out = tmp.name
+    csv_out = str(TEMP_DIR / f"lizard_{uuid.uuid4().hex[:8]}.csv")
 
     try:
         result = subprocess.run(
@@ -562,9 +639,11 @@ def check_test_smells(test_java_path: str, sut_class_path: str) -> dict:
         print(f"  [TsDetect] JAR not found at {TSDETECT_JAR}. Skipping.")
         return {"smells_detected": [], "smell_count": 0, "smell_density": 0.0}
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        input_csv = Path(tmpdir) / "tsdetect_input.csv"
-        output_csv = Path(tmpdir) / "tsdetect_output.csv"
+    tsdetect_dir = TEMP_DIR / f"tsdetect_{uuid.uuid4().hex[:8]}"
+    tsdetect_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        input_csv = tsdetect_dir / "tsdetect_input.csv"
+        output_csv = tsdetect_dir / "tsdetect_output.csv"
 
         # TsDetect does NOT expect a header row — first line is treated as data
         with open(input_csv, "w", encoding="utf-8") as f:
@@ -574,7 +653,7 @@ def check_test_smells(test_java_path: str, sut_class_path: str) -> dict:
             ["java", "-jar", str(TSDETECT_JAR), "-f", str(input_csv), "-o", str(output_csv)],
             capture_output=True,
             text=True,
-            cwd=tmpdir,
+            cwd=tsdetect_dir,
         )
 
         if result.returncode != 0:
@@ -614,6 +693,8 @@ def check_test_smells(test_java_path: str, sut_class_path: str) -> dict:
             "smell_count": smell_count,
             "smell_density": smell_density,
         }
+    finally:
+        shutil.rmtree(tsdetect_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -638,25 +719,25 @@ def check_mutation_score(maven_project_path: str, focal_method: str = "", offlin
     """
     _default = {"mutation_score": 0.0, "killed": 0, "total_mutants": 0, "mutation_evaluated": False}
 
-    try:
-        cmd = [
-            "mvn", "-f", str(Path(maven_project_path) / "pom.xml"),
-            "-Djava.awt.headless=true",
-            "org.pitest:pitest-maven:mutationCoverage", "-q",
-        ]
-        if offline:
-            cmd.insert(1, "-o")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    except subprocess.TimeoutExpired:
-        print("  [PIT] mutationCoverage timed out after 600s")
-        return _default
+    with _PIT_SEMAPHORE:
+        try:
+            result = _run_maven(
+                [
+                    "mvn", "-f", str(Path(maven_project_path) / "pom.xml"),
+                    "-Djava.awt.headless=true",
+                    "org.pitest:pitest-maven:mutationCoverage", "-q",
+                ],
+                timeout=70,
+                offline=offline,
+                discard_output=True,
+                env=_PIT_MAVEN_ENV,
+            )
+        except subprocess.TimeoutExpired:
+            print("  [PIT] mutationCoverage timed out after 70s")
+            return _default
 
     if result.returncode != 0:
-        combined = result.stdout + result.stderr
-        if "Tests failing without mutation" in combined:
-            print("  SKIP — PIT aborted: tests fail in PIT's minion JVM (env/filesystem dependency).")
-        else:
-            print(f"  [PIT] mutationCoverage failed:\n{combined[-800:]}")
+        print(f"  [PIT] mutationCoverage failed (exit {result.returncode}); output discarded.")
         return _default
 
     mutations_xml = Path(maven_project_path) / "target" / "pit-reports" / "mutations.xml"
@@ -859,10 +940,11 @@ def _cleanup_surefire_dirs() -> None:
 
 
 def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
-                   concurrency: int = 4, chunk_size: int = 500,
+                   concurrency: int = 2, chunk_size: int = 500,
                    offline: bool = False,
                    skip_missing_sut: bool = False,
-                   resume: bool = False) -> list[dict]:
+                   resume: bool = False,
+                   return_results: bool = True) -> list[dict]:
     """Evaluates all generated tests found under tests_dir.
 
     Discovers test directories by looking for folders that contain both
@@ -873,7 +955,7 @@ def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
         tests_dir: Root directory containing generated tests
                    (e.g. generated_tests/).
         output_csv: Path for the consolidated CSV report.
-        concurrency: Number of parallel workers (default: 4). Each worker
+        concurrency: Number of parallel workers (default: 2). Each worker
                      runs a full Maven evaluation pipeline, so keep this low
                      enough to avoid I/O and CPU saturation.
         chunk_size: Number of tests evaluated before flushing results to CSV
@@ -885,9 +967,13 @@ def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
         resume: If True, skip tests that already have a results.json (i.e.
                 were successfully evaluated in a previous run). The existing
                 results are loaded and included in the final CSV report.
+        return_results: If False, do not accumulate result dicts in memory.
+                        Results are still written to CSV and results.json.
+                        Use for large batches to avoid holding thousands of
+                        dicts in RAM. Returns an empty list when False.
 
     Returns:
-        List of result dicts, one per evaluated test.
+        List of result dicts, one per evaluated test (empty if return_results=False).
     """
     tests_root = Path(tests_dir)
     test_dirs = sorted(
@@ -935,6 +1021,7 @@ def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
     )
 
     out_path = Path(output_csv)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     print_lock = threading.Lock()
     global_counter = {"n": 0}
     global_test_id = {"n": 0}
@@ -950,6 +1037,14 @@ def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
             global_test_id["n"] += 1
 
     for chunk_idx, chunk in enumerate(chunks):
+        try:
+            import psutil
+            avail_mb = psutil.virtual_memory().available // (1024 * 1024)
+            if avail_mb < 2048:
+                print(f"[Batch] AVISO: memória disponível baixa ({avail_mb} MB). "
+                      f"Considere reduzir --concurrency ou aguardar.")
+        except ImportError:
+            pass
         print(f"\n[Batch] Chunk {chunk_idx + 1}/{len(chunks)} — {len(chunk)} test(s)")
 
         def _run(meta_path: Path) -> dict:
@@ -979,7 +1074,9 @@ def evaluate_batch(tests_dir: str, output_csv: str = "evaluation_results.csv",
                 writer.writerow(row)
                 global_test_id["n"] += 1
 
-        all_results.extend(chunk_results)
+        if return_results:
+            all_results.extend(chunk_results)
+        chunk_results.clear()
         print(f"[Batch] Chunk {chunk_idx + 1} flushed to {out_path} — cleaning Surefire dirs")
         _cleanup_surefire_dirs()
 

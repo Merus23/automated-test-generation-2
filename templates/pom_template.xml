@@ -60,8 +60,8 @@
         <configuration>
           <!-- @{jacoco.argLine} picks up JaCoCo agent without polluting the global argLine
                property, which PIT would otherwise inherit and pass literally to its minion JVM. -->
-          <argLine>@{jacoco.argLine} -Djava.awt.headless=true</argLine>
-          <forkedProcessTimeoutInSeconds>120</forkedProcessTimeoutInSeconds>
+          <argLine>@{jacoco.argLine} -Djava.awt.headless=true -Xmx256m</argLine>
+          <forkedProcessTimeoutInSeconds>60</forkedProcessTimeoutInSeconds>
           <systemPropertyVariables>
             <java.awt.headless>true</java.awt.headless>
           </systemPropertyVariables>
@@ -146,8 +146,26 @@
           </mutableCodePaths>
           <outputFormats><outputFormat>XML</outputFormat></outputFormats>
           <timestampedReports>false</timestampedReports>
+          <!-- 1 thread = 1 minion JVM; default is #CPU cores which multiplies memory usage -->
+          <threads>1</threads>
+          <!-- Cap mutations per class (replaces removed maxMutationsPerClass in PIT 1.15+) -->
+          <features>+CLASSLIMIT(limit[40])</features>
+          <!-- RETURN_VALS was removed in PIT 1.15; replaced by 5 specific return mutators -->
+          <mutators>
+            <mutator>CONDITIONALS_BOUNDARY</mutator>
+            <mutator>NEGATE_CONDITIONALS</mutator>
+            <mutator>EMPTY_RETURNS</mutator>
+            <mutator>FALSE_RETURNS</mutator>
+            <mutator>TRUE_RETURNS</mutator>
+            <mutator>NULL_RETURNS</mutator>
+            <mutator>PRIMITIVE_RETURNS</mutator>
+            <mutator>VOID_METHOD_CALLS</mutator>
+          </mutators>
+          <!-- Kill hung test runs faster (ms added per test; default 4000) -->
+          <timeoutConstant>2000</timeoutConstant>
           <jvmArgs>
             <jvmArg>-Djava.awt.headless=true</jvmArg>
+            <jvmArg>-Xmx256m</jvmArg>
           </jvmArgs>
         </configuration>
       </plugin>
